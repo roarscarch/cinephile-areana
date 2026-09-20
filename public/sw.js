@@ -7,7 +7,7 @@
 //  - API + /play: NEVER cached (auth'd tokens, range requests, live data)
 // Bump this name on every release that changes static assets — the activate
 // handler purges the old cache, so a stale SW cache can never outlive a deploy.
-const CACHE = 'myflixerz-v18';
+const CACHE = 'myflixerz-v19';
 const SHELL = ['/', '/css/style.css', '/js/api.js', '/js/player.js', '/js/render.js', '/js/router.js', '/vendor/hls.min.js', '/manifest.webmanifest', '/icons/icon.svg'];
 
 // everything the app fetches from our own API — network only.

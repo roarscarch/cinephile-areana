@@ -20,6 +20,19 @@
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
   <noscript><link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" /></noscript>
   <link rel="stylesheet" href="/css/style.css" />
+  <script>
+    // The server SSRs the HOME view into <main id="view"> for every '/' request,
+    // and the URL hash is never sent to the server — so on a deep link
+    // (#/watch/…, #/movies, #/search) that markup is already stale when the
+    // document is parsed. It used to stay visible until router.js (the last
+    // script on the page) swapped in the real view, so refreshing a watch page
+    // flashed the home page first. Mark the document BEFORE the body is parsed
+    // so the CSS below hides it from the very first paint; the router removing
+    // `data-ssr-home` afterwards makes the rule inert.
+    try {
+      if (location.hash.replace(/^#\/?/, '')) document.documentElement.classList.add('no-ssr');
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <div id="app">
@@ -50,11 +63,11 @@
   <!-- hls.js is NOT here — it's lazy-loaded only when a watch page opens
        (browse/search pages skip ~400KB of parsing) -->
   <!-- ?v= busts the service-worker/HTTP caches on release — bump alongside sw.js CACHE -->
-  <script src="/js/api.js?v=16"></script>
-  <script src="/js/player.js?v=16"></script>
+  <script src="/js/api.js?v=17"></script>
+  <script src="/js/player.js?v=17"></script>
   <!-- render.js must load before router.js (shared SSR/client markup helpers) -->
-  <script src="/js/render.js?v=16"></script>
-  <script src="/js/router.js?v=16"></script>
+  <script src="/js/render.js?v=17"></script>
+  <script src="/js/router.js?v=17"></script>
   <script>
     // PWA: register the service worker (installable app + cached shell)
     if ('serviceWorker' in navigator) {

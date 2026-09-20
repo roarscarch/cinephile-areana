@@ -156,7 +156,7 @@ sequenceDiagram
 | `flixhq.js` | `FlixHQ` class: TMDB metadata + listings, `fetchEpisodeSources`, `fetchDubs`, embeds |
 | `extractor.js` | **The crack layer**: Peachify + Vidnest decoders, subtitle fetchers, `resolveStream` dispatch, caching |
 | `models.js` | `TvType` enum |
-| `public/index.html` | SPA shell |
+| `public/index.html` | SPA shell — plus the pre-paint `no-ssr` guard that stops deep links from flashing the server-rendered home view |
 | `public/css/` | Styles |
 | `public/js/app.js` | Hash router + all views (home, detail, watch, browse, search) |
 | `public/js/player.js` | `MoviePlayer` — hls.js wrapper, server fallback, quality/audio/subs |

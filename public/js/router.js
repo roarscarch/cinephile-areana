@@ -919,7 +919,15 @@
     // other view replaces it, so the flag must not outlive that render
     // (otherwise a later home visit would skip its template and query DOM
     // that no longer exists).
-    if (parts.length) view.removeAttribute('data-ssr-home');
+    if (parts.length) {
+      // Deep link (#/watch/…, #/movies…): the server's pre-rendered HOME is
+      // stale for this URL. index.html's head script already hides it before
+      // the first paint; dropping the nodes here as well closes the second
+      // window — between removing the flag (which re-exposes it) and the async
+      // view actually rendering — so a refresh never flashes the home page.
+      view.textContent = '';
+      view.removeAttribute('data-ssr-home');
+    }
     if (!parts.length) return views.home();
     switch (parts[0]) {
       case 'movie':

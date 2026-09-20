@@ -18,6 +18,12 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* The server always SSRs the home view for '/', but never sees the URL hash.
+   On a deep link the index.html head script adds this class before the body is
+   parsed, so the stale pre-rendered home is never painted while router.js
+   (loaded last) swaps in the real view — no home-page flash on refresh. */
+html.no-ssr [data-ssr-home] { display: none; }
+
 /* hidden attribute must win over any display:flex rules */
 [hidden] { display: none !important; }
 
