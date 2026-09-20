@@ -240,7 +240,9 @@ function vidnestToResult(provider, data) {
       return {
         url,
         quality: s.quality || s.resolution || s.label || 'auto',
-        isM3U8: s.type === 'hls' || /\.m3u8($|\?)|streamsvr|\/hls\//i.test(url),
+        // rogflix HLS hides behind /hls\d*/.../master.txt (no .m3u8 in the URL)
+        isM3U8: s.type === 'hls' || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(url)
+          || /master\.txt($|\?)|\.txt($|\?)/i.test(url),
         headers: s.headers || null,
         referer: (s.headers && s.headers.Referer) || s.referer || null,
         lang: s.language || null,
@@ -326,9 +328,18 @@ async function probeStreamPlayable(src) {
   if (!src || !src.url) return false;
   try {
     const headers = { 'User-Agent': STREAM_UA };
+    // This CDN family 404s on empty/missing Referer (no Referer == 404, ANY
+    // non-empty Referer == 200). Mirror /play + player defaults so the probe
+    // sees what playback will see — never probe headerless.
     if (src.referer) headers.Referer = src.referer;
+    else headers.Referer = PEACHIFY_REFERER;
     if (src.origin) headers.Origin = src.origin;
-    const isM3U8 = src.isM3U8 || /\.m3u8($|\?)/i.test(src.url);
+    // rogflix-style HLS hides behind /hls3/.../master.txt (no .m3u8). Treat
+    // those as playlists too; any response whose body opens with #EXTM3U is
+    // accepted as HLS even if the URL gave no hint (mp4 heads never match).
+    const isM3U8 = src.isM3U8
+      || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url)
+      || /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
     const res = await httpClient.get(src.url, {
       headers,
       timeout: PROBE_STREAM_TIMEOUT_MS,
@@ -521,7 +532,11 @@ function toResult(provider, data, type, id, season, episode) {
         quality: unwrapped.quality || unwrapped.resolution || unwrapped.height || 'auto',
         sizeBytes: unwrapped.sizeBytes || unwrapped.size || null,
         dub: unwrapped.dub || null,
-        isM3U8: /\.m3u8($|\?)|m3u8-proxy/i.test(unwrapped.url || ''),
+        // rogflix HLS hides behind /hls\d*/.../master.txt (no .m3u8 in the URL)
+        // but IS a playlist — flag it so /play treats it as text to rewrite,
+        // the player loads hls.js for it, and the probe GETs it (not Range).
+        isM3U8: /\.m3u8($|\?)|m3u8-proxy|streamsvr|\/hls\d*\//i.test(unwrapped.url || '')
+          || /master\.txt($|\?)|\.txt($|\?)/i.test(unwrapped.url || ''),
         headers: unwrapped.headers || null,
         referer,
         origin,

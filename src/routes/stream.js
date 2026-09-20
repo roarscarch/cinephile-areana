@@ -146,7 +146,11 @@ module.exports = function streamRoutes() {
             const t = line.trim();
             if (!t) return line;
             if (t.startsWith('#')) {
-              if (t.startsWith('#EXT-X-MEDIA')) {
+              // #EXT-X-MEDIA:URI="..." (audio/subs) AND #EXT-X-I-FRAME-STREAM-INF
+              // :URI="..." (rogflix masters carry one) — both are relative and
+              // must ride /play or the browser resolves them against OUR origin
+              // and 404s. Rewrite any quoted URI attribute on any # tag.
+              if (/URI="/i.test(t)) {
                 return line.replace(/URI="([^"]+)"/g, (m, u) => {
                   const r = toPlay(u);
                   return r ? `URI="${r}"` : m;

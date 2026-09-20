@@ -67,6 +67,15 @@ test('vidnest: shape 1 relay {url, headers} → hls source with referer', () => 
   assert.strictEqual(r.sources[0].referer, 'https://vidnest.fun/');
 });
 
+test('vidnest: rogflix /hls3/.../master.txt is flagged HLS (no .m3u8 in URL)', () => {
+  const r = vidnestToResult(
+    { name: 'rogflix' },
+    { url: 'https://qCsH3mKRD1SG2.financialliteracyapp.cfd/GqJ5X7BzMA2D/hls3/01/11193/s2cr6f8i0kmk_n/master.txt' }
+  );
+  assert.strictEqual(r.sources.length, 1);
+  assert.strictEqual(r.sources[0].isM3U8, true);
+});
+
 test('vidnest: shape 2 {streams:[...]} → each normalized, hls flagged', () => {
   const r = vidnestToResult(
     { name: 'hollymoviehd' },
@@ -137,4 +146,13 @@ test('peachify: toResult unwraps mp4-proxy (any host) into real CDN url', () => 
   assert.strictEqual(r.sources[0].url, real);
   assert.strictEqual(r.sources[0].isM3U8, false);
   assert.strictEqual(r.sources[0].referer, null); // no headers param → no header gating
+});
+
+test('peachify: toResult flags .txt HLS masters (rogflix-style unwrapped URLs)', () => {
+  const r = toResult(
+    { name: 'wolf' },
+    { sources: [{ url: 'https://cdn.example/hls3/01/11193/x/master.txt', dub: 'English' }] }
+  );
+  assert.strictEqual(r.sources.length, 1);
+  assert.strictEqual(r.sources[0].isM3U8, true);
 });
