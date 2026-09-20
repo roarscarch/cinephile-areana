@@ -280,7 +280,16 @@ const Player = (() => {
     }
 
     _play() {
-      if (!this.sources.length) return this._autoAdvance(this.provider); // empty server → race the rest
+      // Manual pick: the user explicitly chose this server, so it OWNS the
+      // player until they pick another one. Empty/dead here must STAY with a
+      // clear message — never silently re-race to a different server.
+      if (!this.sources.length) {
+        if (this._manualServer) {
+          this._started = false;
+          return this.showError(`No sources on ${PROVIDER_LABELS[this.provider] || this.provider || 'this server'} — pick another server.`);
+        }
+        return this._autoAdvance(this.provider); // Auto mode: race the rest
+      }
       this._started = true;
       // respect the stored audio choice (dub) when this server carries it
       let src = null;
@@ -465,6 +474,9 @@ const Player = (() => {
       if (this.currentIndex < this.sources.length) {
         this.showLoading('Source failed — trying another…');
         this._attach(this.sources[this.currentIndex]);
+      } else if (this._manualServer) {
+        // Manual pick exhausted its own sources: STAY, don't race away.
+        this.showError(`Couldn't play ${PROVIDER_LABELS[this.provider] || this.provider || 'this server'} — pick another server.`);
       } else {
         this._autoAdvance(this.provider);
       }
@@ -574,6 +586,10 @@ const Player = (() => {
      * that's a real outage and worth an actual error message.
      */
     _autoAdvance(failedProvider) {
+      // Manual picks never auto-advance: the user owns the server choice.
+      if (this._manualServer) {
+        return this.showError(`Couldn't play ${PROVIDER_LABELS[this.provider] || this.provider || 'this server'} — pick another server.`);
+      }
       if (!this._racedProviders) this._racedProviders = new Set();
       if (failedProvider) this._racedProviders.add(failedProvider);
       if (this._raceAttempts >= MAX_RACE_ATTEMPTS) {
@@ -592,6 +608,8 @@ const Player = (() => {
 
     async switchServer(name, skip = []) {
       this.server = name;
+      // A named server is a MANUAL pick (sticky); null/undefined is Auto (race).
+      this._manualServer = !!name;
       this.currentIndex = 0;
       this.showLoading(
         name
@@ -611,6 +629,10 @@ const Player = (() => {
         );
         this._play();
       } catch (e) {
+        // Manual pick that throws: STAY with a clear message. Auto: race on.
+        if (this._manualServer) {
+          return this.showError(`Couldn't play ${PROVIDER_LABELS[name || this.provider] || name || this.provider || 'this server'} — pick another server.`);
+        }
         // never surface the raw error while other servers may exist
         this._autoAdvance(name || this.provider);
       }
