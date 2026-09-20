@@ -65,6 +65,9 @@ for (const rel of PRECOMPRESS) {
 }
 
 // 1. Core middlewares
+// Vercel sits behind a reverse proxy that sets X-Forwarded-For. Without this,
+// express-rate-limit throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and crashes.
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(compression());
 app.use(express.json());

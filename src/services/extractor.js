@@ -151,7 +151,11 @@ async function fetchProvider(provider, type, id, season, episode) {
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
     const res = await httpClient.get(url, {
-      headers: { Referer: PEACHIFY_REFERER },
+      headers: {
+        Referer: PEACHIFY_REFERER,
+        Origin: 'https://peachify.top',
+        'User-Agent': STREAM_UA,
+      },
       timeout: PROBE_TIMEOUT_MS,
     });
     const json = res.data;
@@ -170,7 +174,11 @@ async function fetchSubtitles(type, id, season, episode) {
     let url = `${PEACHIFY_API}/subs/${type}/${id}`;
     if (type === 'tv') url += `/${season}/${episode}`;
     const res = await httpClient.get(url, {
-      headers: { Referer: PEACHIFY_REFERER },
+      headers: {
+        Referer: PEACHIFY_REFERER,
+        Origin: 'https://peachify.top',
+        'User-Agent': STREAM_UA,
+      },
       timeout: 3000,
     });
     const raw = res.data || [];
@@ -209,7 +217,11 @@ async function fetchVidnestProvider(provider, type, id, season, episode) {
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
     const res = await httpClient.get(url, {
-      headers: { Referer: VIDNEST_REFERER, 'User-Agent': STREAM_UA },
+      headers: {
+        Referer: VIDNEST_REFERER,
+        Origin: 'https://vidnest.fun',
+        'User-Agent': STREAM_UA,
+      },
       timeout: PROBE_TIMEOUT_MS,
     });
     const json = res.data;
@@ -352,13 +364,19 @@ async function probeStreamPlayable(src) {
       responseType: 'arraybuffer',
       ...(isM3U8 ? {} : { headers: { ...headers, Range: 'bytes=0-0' } }),
     });
-    if (!res || (res.status !== 200 && res.status !== 206)) return false;
+    if (!res || (res.status !== 200 && res.status !== 206)) {
+      console.error(`[probe] status ${(res && res.status)} for ${src.url}`);
+      return false;
+    }
     if (isM3U8) {
       const head = Buffer.from(res.data || []).toString('utf8', 0, 300);
-      return /#EXT/i.test(head) || String(res.headers['content-type'] || '').includes('mpegurl');
+      const ok = /#EXT/i.test(head) || String(res.headers['content-type'] || '').includes('mpegurl');
+      if (!ok) console.error(`[probe] not m3u8 head: ${head.slice(0, 100)}`);
+      return ok;
     }
     return (res.data && res.data.byteLength > 0); // mp4/mkv — any ranged bytes is playable
   } catch (e) {
+    console.error(`[probe] error for ${src.url}:`, e.message || e);
     return false;
   }
 }
@@ -412,6 +430,7 @@ async function autoRace(pOrder, vOrder, key, opts) {
           return { ok: true, fam, p, result };
         })
         .catch((e) => {
+          console.error(`[extractor] ${fam} ${p.name} error:`, e.message || e);
           markDead(fam, p, key);
           fails[fam]++;
           lastErr[fam] = e && e.message;
