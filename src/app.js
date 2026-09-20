@@ -163,7 +163,7 @@ app.get('/', async (req, res, next) => {
     const ae = String(req.headers['accept-encoding'] || '');
     const useBr = /\bbr\b/.test(ae);
     const useGz = !useBr && /\bgzip\b/.test(ae);
-    res.set('Cache-Control', 'no-cache').type('html');
+    res.set('Cache-Control', 'public, max-age=0, s-maxage=600, stale-while-revalidate=86400').type('html');
     if (useBr) {
       res.setHeader('Content-Encoding', 'br');
       res.send(HOME_HTML.br);

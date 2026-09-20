@@ -4,6 +4,12 @@ const { Router } = require('express');
 module.exports = function browseRoutes(tmdb) {
   const router = Router();
 
+  // Edge-cache catalog browsing routes: 5 min client, 1 hour Edge CDN, 1 day stale-while-revalidate
+  router.use((req, res, next) => {
+    res.set('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400');
+    next();
+  });
+
   // Recent movies endpoint
   router.get('/recent/movies', async (req, res) => {
     try {

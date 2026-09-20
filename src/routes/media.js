@@ -35,6 +35,7 @@ module.exports = function mediaRoutes(tmdb) {
       if (!info) {
         return res.status(404).json({ error: 'Media not found' });
       }
+      res.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
       res.json(info);
     } catch (error) {
       if (error.message.includes('404')) {
@@ -126,6 +127,7 @@ module.exports = function mediaRoutes(tmdb) {
       if (!mediaId) return res.status(400).json({ error: 'mediaId query parameter is required' });
       if (!episodeId) return res.status(400).json({ error: 'Episode ID is required' });
       const subtitles = await tmdb.fetchEpisodeSubtitles(episodeId, mediaId);
+      res.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
       res.json({ subtitles });
     } catch (error) {
       res.status(500).json({ error: error.message });
@@ -141,6 +143,7 @@ module.exports = function mediaRoutes(tmdb) {
         return res.status(400).json({ error: 'mediaId query parameter is required' });
       }
       const dubs = await tmdb.fetchDubs(episodeId, mediaId);
+      res.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
       res.json(dubs);
     } catch (error) {
       res.status(500).json({ error: error.message });
