@@ -115,15 +115,17 @@
   }
 
   const prefetched = new Set();
+  // ONLY /info is prefetched on hover. Pulling /sources here too used to launch
+  // the extractor's full auto-race (every provider across both families, up to
+  // an 8s probe window per title) for any card the cursor merely crossed, and
+  // those resolves fight the real click for upstream connections — the actual
+  // playback start gets SLOWER. /info is one cached TMDB lookup; it's all the
+  // "instant detail page" benefit we want.
   function prefetchMedia(href) {
     if (!href || prefetched.has(href)) return;
     prefetched.add(href);
     const m = href.match(/^#\/(movie|tv)\/(\d+)/);
-    if (m) {
-      const mediaId = `${m[1]}/${m[2]}`;
-      API.info(mediaId).catch(() => {});
-      API.sources(mediaId, '1-1').catch(() => {});
-    }
+    if (m) API.info(`${m[1]}/${m[2]}`).catch(() => {});
   }
 
   function bindCards(scope) {
@@ -231,6 +233,28 @@
   const views = {};
 
   // ---- home ----
+  // One home row: swap a section's skeleton for real cards. `rowIndex`
+  // addresses the five data rows (Trending Movies, Trending TV, IMDb 7.5+,
+  // Now Playing, Top Rated) in DOM order — the Continue Watching section has
+  // no data-row attribute, so it is NOT counted here. Shared by the SSR
+  // hydration path and the plain fetch path so both stay in sync.
+  function hydrateHomeRow(scope, endpoint, rowIndex) {
+    return API.get(endpoint)
+      .then((data) => {
+        // the user may have navigated away while the request was in flight
+        if (!scope.isConnected || !document.contains(scope)) return;
+        const items = (Array.isArray(data) ? data : data.results || []).slice(0, 14);
+        const sectionEl = scope.querySelectorAll('.section[data-row]')[rowIndex];
+        if (!sectionEl) return;
+        sectionEl.querySelector('.row-wrap').outerHTML = rowWithArrows(items.map(card).join(''));
+        bindRowArrows(scope);
+        bindCards(scope);
+      })
+      .catch((e) => {
+        console.warn(endpoint, e);
+      });
+  }
+
   views.home = async () => {
     scrollTop();
     setActiveNav(null);
@@ -263,9 +287,18 @@
     }
 
     if (ssr) {
-      // rows already painted server-side — wire everything up once, no fetches
+      // Trending rows are already painted server-side — wire them up with zero
+      // fetches. The other three rows arrive as skeletons (the server only
+      // blocks on the two above-the-fold lists for TTFB) and hydrate here,
+      // staggered so the browser's own idle priority + the connection budget
+      // decide when they land.
       bindRowArrows(view);
       bindCards(view);
+      // these three rendered as skeletons server-side (only the trending rows
+      // block TTFB) — fill them in as their data lands
+      hydrateHomeRow(view, '/top-imdb?type=movie&minVote=7.5', 2);
+      hydrateHomeRow(view, '/recent/movies', 3);
+      hydrateHomeRow(view, '/top-imdb?type=all', 4);
       return;
     }
 
@@ -283,28 +316,9 @@
       ['/recent/movies', 'now-playing'],
       ['/top-imdb?type=all', 'top-rated'],
     ];
-    // all four rows fetch in parallel (was sequential: 4 round-trips in a row);
-    // one failure degrades to an empty row instead of stalling the rest
-    const results = await Promise.all(
-      sections.map(async ([ep]) => {
-        try {
-          const data = await API.get(ep);
-          return Array.isArray(data) ? data : data.results || [];
-        } catch (e) {
-          console.warn(ep, e);
-          return [];
-        }
-      })
-    );
-    sections.forEach(([, sel], i) => {
-      const items = results[i];
-      const sectionEl = view.querySelectorAll('.section[data-row]')[i];
-      sectionEl.querySelector('.row-wrap').outerHTML = rowWithArrows(
-        items.slice(0, 14).map(card).join('')
-      );
-      bindRowArrows(view);
-      bindCards(view);
-    });
+    // all five rows fetch in parallel; one failure degrades to an empty row
+    // instead of stalling the rest
+    sections.forEach(([ep], i) => hydrateHomeRow(view, ep, i));
   };
 
   // ---- browse ----
@@ -339,26 +353,16 @@
       loadBtn.disabled = true;
       loadBtn.textContent = 'Loading…';
       try {
-        // Page 1 of the movies grid ships inside the HTML (__INITIAL__, set
-        // by the server alongside the home SSR) — the grid paints without a
-        // round-trip. One-shot: consumed once, later pages fetch normally.
-        let data = null;
-        // Page-1 results ship inside the HTML (__INITIAL__, set by the server
-        // alongside the home SSR) — the grid paints without a round-trip.
-        // One-shot per kind: consumed once, later pages fetch normally.
-        const init = window.__INITIAL__ && window.__INITIAL__.browse && window.__INITIAL__.browse[kind];
-        if (page === 1 && init) {
-          data = { results: init, hasNextPage: true };
-          delete window.__INITIAL__.browse[kind];
-        } else {
-          data = kind === 'genre'
-            ? await API.genre(genre, page)
-            : kind === 'top-rated'
-              ? await API.topImdb('all', page)
-              : kind === 'imdb75'
-                ? await API.imdb75(page)
-                : await API.browse(kind === 'tv-shows' ? 'tv' : 'movies', page);
-        }
+        // (The old __INITIAL__ inline-data fast path was removed: the server
+        // no longer bloats every '/' payload with a second page of posters for
+        // a view the user may never open — a direct fetch here is fast.)
+        const data = kind === 'genre'
+          ? await API.genre(genre, page)
+          : kind === 'top-rated'
+            ? await API.topImdb('all', page)
+            : kind === 'imdb75'
+              ? await API.imdb75(page)
+              : await API.browse(kind === 'tv-shows' ? 'tv' : 'movies', page);
         const items = data.results || [];
         hasNext = !!data.hasNextPage;
         if (page === 1) gridEl.innerHTML = ''; // drop the skeleton placeholders

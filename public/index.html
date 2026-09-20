@@ -14,11 +14,12 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="dns-prefetch" href="https://x.eat-peach.sbs" />
   <link rel="dns-prefetch" href="https://new.vidnest.fun" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <!-- async: fonts must never block first paint (text shows in fallback until ready) -->
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
-  <noscript><link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" /></noscript>
+  <!-- Outfit is self-hosted now (see @font-face in style.css): same-origin
+       variable woff2 (all weights in ONE 32 KB file), no
+       fonts.googleapis.com / fonts.gstatic.com round-trip on the critical
+       path, and the service worker caches it. crossorigin is required on font
+       preloads even for same-origin files (font fetches are CORS-mode). -->
+  <link rel="preload" href="/fonts/outfit-latin.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="/css/style.css" />
   <script>
     // The server SSRs the HOME view into <main id="view"> for every '/' request,
@@ -63,11 +64,11 @@
   <!-- hls.js is NOT here — it's lazy-loaded only when a watch page opens
        (browse/search pages skip ~400KB of parsing) -->
   <!-- ?v= busts the service-worker/HTTP caches on release — bump alongside sw.js CACHE -->
-  <script src="/js/api.js?v=17"></script>
-  <script src="/js/player.js?v=17"></script>
+  <script src="/js/api.js?v=18"></script>
+  <script src="/js/player.js?v=18"></script>
   <!-- render.js must load before router.js (shared SSR/client markup helpers) -->
-  <script src="/js/render.js?v=17"></script>
-  <script src="/js/router.js?v=17"></script>
+  <script src="/js/render.js?v=18"></script>
+  <script src="/js/router.js?v=18"></script>
   <script>
     // PWA: register the service worker (installable app + cached shell)
     if ('serviceWorker' in navigator) {

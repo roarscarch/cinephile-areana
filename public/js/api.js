@@ -36,7 +36,13 @@ const API = (() => {
   };
 })();
 
-// Upgrade TMDB image size (our API returns w500).
+// Upgrade a TMDB w500 URL to a bigger rendition.
+//
+// IMPORTANT: this used to jump straight to /original/, which is the source
+// master — real backdrops are 300KB-2MB there, and router.js paints this URL
+// as the (blurred, full-bleed) hero background of every detail page. /w1280 is
+// visually identical behind a blurred backdrop at ~5x less bandwidth.
+// Only upgrades paths that are already w500; anything else is returned as-is.
 function hiRes(path) {
-  return path ? path.replace('/w500/', '/original/') : null;
+  return path ? path.replace('/w500/', '/w1280/') : null;
 }

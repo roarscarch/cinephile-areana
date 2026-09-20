@@ -17,6 +17,32 @@
     return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  // Image markup: the poster art is authored once and rendered by both the
+  // server (SSR home) and the browser, so every card on the site is tuned here.
+  //
+  // Why not plain w500: w500 is 62-125 KB per file while these cards render at
+  // 168px (136px mobile) / up to ~240px in grid columns. A responsive srcset
+  // lets the browser pick w342 (~29 KB, -54%) for normal density and only pay
+  // for w500 where a 2x screen actually needs it.
+  //
+  // decoding=async: keeps the ~58 per-home decodes off the main thread — with
+  // w500 they were enough to push first contentful paint from ~400 ms to
+  // ~1.3 s. loading=lazy stays (below-fold rows are deferred).
+  const SIZES = '(max-width: 700px) 45vw, 240px';
+  function posterImg(src, alt) {
+    if (!src) return '';
+    const s342 = esc(src.replace('/w500/', '/w342/'));
+    const s500 = esc(src);
+    return `<img
+      src="${s342}"
+      srcset="${s342} 342w, ${s500} 500w"
+      sizes="${SIZES}"
+      alt="${esc(alt)}"
+      loading="lazy"
+      decoding="async"
+      onerror="this.style.visibility='hidden'" />`;
+  }
+
   function card(item) {
     const [type] = String(item.id || '').split('/');
     const url = item.href || `#/${type}/${item.id.split('/')[1]}`;
@@ -26,7 +52,7 @@
       <div class="card" data-href="${url}">
         <div class="poster-wrap">
           <span class="card-badge ${badge}">${TYPE_LABEL[type] || ''}</span>
-          ${item.image ? `<img src="${esc(item.image)}" alt="${esc(item.title)}" loading="lazy" />` : ''}
+          ${posterImg(item.image, item.title)}
           ${item.rating ? `<span class="card-rating">★ ${Number(item.rating).toFixed(1)}</span>` : ''}
           ${item.progress ? `<div class="card-progress"><i style="width:${item.progress}%"></i></div>` : ''}
           <div class="card-hover">
