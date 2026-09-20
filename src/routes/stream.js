@@ -69,6 +69,134 @@ function getCachedPlaylist(key) {
   return hit.text;
 }
 
+function cachePlaylist(key, text) {
+  if (PLAYLIST_CACHE.size >= PLAYLIST_CACHE_MAX) {
+    const oldest = PLAYLIST_CACHE.keys().next().value;
+    if (oldest) PLAYLIST_CACHE.delete(oldest);
+  }
+  PLAYLIST_CACHE.set(key, { text, ts: Date.now() });
+}
+
+// Playlists are small (1-200 KB); this only guards against a CDN answering a
+// huge binary with a "#EXTM3U" prefix — past the cap we stream it verbatim.
+const PLAYLIST_MAX_BYTES = 4 * 1024 * 1024;
+
+// HLS detection by CONTENT, because Content-Type lies. The mendx437sim-backed
+// `multi` provider (and others) serve their master as `text/html` with
+// RELATIVE variant paths (./360/index.m3u8). Trusting the header piped the raw
+// playlist to the browser, which resolved './360/index.m3u8' against OUR own
+// origin → 404 → hls.js fatal → the player declared a healthy server dead.
+function looksLikePlaylist(buf) {
+  if (!buf || !buf.length) return false;
+  const head = buf.subarray(0, 512).toString('utf8').replace(/^\uFEFF/, '').trimStart();
+  return head.startsWith('#EXTM3U');
+}
+
+// Rewrite every media URL in a playlist so the whole tree rides /play. Relative
+// lines, relative/absolute URI="…" attributes, everything — otherwise the
+// browser resolves them against our origin and 404s.
+function rewritePlaylist(text, url, referer, origin) {
+  const toPlay = (u) => {
+    try {
+      const abs = new URL(u, url).href;
+      const params = new URLSearchParams({ ref: referer });
+      if (origin) params.set('origin', origin);
+      params.set('url', abs);
+      return `/play?${params.toString()}`;
+    } catch (e) {
+      return null;
+    }
+  };
+  return text
+    .split('\n')
+    .map((line) => {
+      const t = line.trim();
+      if (!t) return line;
+      if (t.startsWith('#')) {
+        if (/URI="/i.test(t)) {
+          return line.replace(/URI="([^"]+)"/g, (m, u) => {
+            const r = toPlay(u);
+            return r ? `URI="${r}"` : m;
+          });
+        }
+        return line;
+      }
+      return toPlay(t) || line;
+    })
+    .join('\n');
+}
+
+// Pull the first chunk out of a paused-readable without consuming the rest, so
+// an ambiguous response can be classified before we commit to a path.
+function readFirstChunk(stream) {
+  return new Promise((resolve, reject) => {
+    const done = (fn, v) => {
+      stream.off('data', onData).off('end', onEnd).off('error', onError);
+      fn(v);
+    };
+    const onData = (c) => {
+      stream.pause();
+      done(resolve, c);
+    };
+    const onEnd = () => done(resolve, Buffer.alloc(0));
+    const onError = (e) => done(reject, e);
+    stream.on('data', onData).on('end', onEnd).on('error', onError);
+  });
+}
+
+// Drain whatever is left, bounded by `cap` bytes.
+function readRest(stream, cap) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    stream.on('data', (c) => {
+      total += c.length;
+      if (total <= cap) chunks.push(c);
+    });
+    stream.on('end', () => resolve({ chunks, total }));
+    stream.on('error', reject);
+    stream.resume();
+  });
+}
+
+// mp4 / segments / subtitles: stream through (piped, constant memory) and tee
+// small un-ranged bodies into the LRU segment cache as they flow.
+async function pipeThrough(res, body, prelude, ct, upstream, range, cacheKey) {
+  if (upstream.status === 206) res.status(206);
+  const cl = upstream.headers.get('content-length');
+  if (cl) res.set('Content-Length', cl);
+  if (upstream.headers.get('content-range')) res.set('Content-Range', upstream.headers.get('content-range'));
+
+  await new Promise((resolve, reject) => {
+    body.on('error', (e) => {
+      res.destroy();
+      reject(e);
+    });
+    res.on('close', resolve);
+
+    // The sniffed prelude must ALWAYS reach the client — the tee below only
+    // duplicates it into the segment cache, it doesn't replace the write.
+    for (const c of prelude) res.write(c);
+
+    const tee = !range && cl && Number(cl) > 0 && Number(cl) <= SEGMENT_CACHE_MAX_ITEM;
+    if (tee) {
+      const chunks = [...prelude];
+      let total = prelude.reduce((n, c) => n + c.length, 0);
+      body.on('data', (c) => {
+        total += c.length;
+        if (total <= SEGMENT_CACHE_MAX_ITEM) chunks.push(c);
+        else chunks.length = 0;
+      });
+      body.on('end', () => {
+        if (chunks.length && total <= SEGMENT_CACHE_MAX_ITEM) {
+          cacheSegment(cacheKey, Buffer.concat(chunks), ct);
+        }
+      });
+    }
+    body.pipe(res);
+  });
+}
+
 module.exports = function streamRoutes() {
   const router = Router();
 
@@ -124,81 +252,33 @@ module.exports = function streamRoutes() {
         'Content-Type': ct,
         'Cache-Control': 'no-store',
       });
-      if (upstream.headers.get('content-range')) res.set('Content-Range', upstream.headers.get('content-range'));
 
       if (ct.includes('mpegurl') || ct.includes('m3u8')) {
-        // Rewrite every media URL in the playlist to go through /play
-        const text = await upstream.text();
-        const toPlay = (u) => {
-          try {
-            const abs = new URL(u, url).href;
-            const params = new URLSearchParams({ ref: referer });
-            if (origin) params.set('origin', origin);
-            params.set('url', abs);
-            return `/play?${params.toString()}`;
-          } catch (e) {
-            return null;
-          }
-        };
-        const rewritten = text
-          .split('\n')
-          .map((line) => {
-            const t = line.trim();
-            if (!t) return line;
-            if (t.startsWith('#')) {
-              // #EXT-X-MEDIA:URI="..." (audio/subs) AND #EXT-X-I-FRAME-STREAM-INF
-              // :URI="..." (rogflix masters carry one) — both are relative and
-              // must ride /play or the browser resolves them against OUR origin
-              // and 404s. Rewrite any quoted URI attribute on any # tag.
-              if (/URI="/i.test(t)) {
-                return line.replace(/URI="([^"]+)"/g, (m, u) => {
-                  const r = toPlay(u);
-                  return r ? `URI="${r}"` : m;
-                });
-              }
-              return line;
-            }
-            return toPlay(t) || line;
-          })
-          .join('\n');
-        // bound the cache
-        if (PLAYLIST_CACHE.size >= PLAYLIST_CACHE_MAX) {
-          const oldest = PLAYLIST_CACHE.keys().next().value;
-          if (oldest) PLAYLIST_CACHE.delete(oldest);
-        }
-        PLAYLIST_CACHE.set(req.originalUrl, { text: rewritten, ts: Date.now() });
-        res.send(rewritten);
+        // Header says playlist — rewrite and serve (master/variant both).
+        const rewritten = rewritePlaylist(await upstream.text(), url, referer, origin);
+        cachePlaylist(req.originalUrl, rewritten);
+        res.type('application/vnd.apple.mpegurl').send(rewritten);
       } else {
-        // mp4 / segments / subtitles: stream through (piped, constant memory)
-        if (upstream.status === 206) res.status(206);
-        const cl = upstream.headers.get('content-length');
-        if (cl) res.set('Content-Length', cl);
+        // Content-Type said "not a playlist" — but it lies. Sniff the body:
+        // `multi`'s CDN serves text/html masters with RELATIVE variant paths,
+        // and piping those raw is exactly what killed playback on this title.
+        const body = Readable.fromWeb(upstream.body);
+        const first = await readFirstChunk(body);
 
-        await new Promise((resolve, reject) => {
-          const body = Readable.fromWeb(upstream.body);
-          body.on('error', (e) => {
-            res.destroy();
-            reject(e);
-          });
-          res.on('close', resolve);
-
-          // Tee small un-ranged responses (segments) into LRU cache as they flow
-          if (!range && cl && Number(cl) > 0 && Number(cl) <= SEGMENT_CACHE_MAX_ITEM) {
-            const chunks = [];
-            let total = 0;
-            body.on('data', (c) => {
-              total += c.length;
-              if (total <= SEGMENT_CACHE_MAX_ITEM) chunks.push(c);
-              else chunks.length = 0;
-            });
-            body.on('end', () => {
-              if (chunks.length && total <= SEGMENT_CACHE_MAX_ITEM) {
-                cacheSegment(req.originalUrl, Buffer.concat(chunks), ct);
-              }
-            });
+        if (looksLikePlaylist(first)) {
+          const { chunks, total } = await readRest(body, PLAYLIST_MAX_BYTES);
+          if (total <= PLAYLIST_MAX_BYTES) {
+            const text = Buffer.concat([first, ...chunks]).toString('utf8');
+            const rewritten = rewritePlaylist(text, url, referer, origin);
+            cachePlaylist(req.originalUrl, rewritten);
+            body.destroy();
+            return res.type('application/vnd.apple.mpegurl').send(rewritten);
           }
-          body.pipe(res);
-        });
+          // Absurdly large for a playlist — fall through and stream verbatim.
+          return pipeThrough(res, body, [first, ...chunks], ct, upstream, range, req.originalUrl);
+        }
+
+        return pipeThrough(res, body, first.length ? [first] : [], ct, upstream, range, req.originalUrl);
       }
     } catch (e) {
       if (!res.headersSent) res.status(502).json({ error: `Proxy error: ${e.message}` });
@@ -209,3 +289,7 @@ module.exports = function streamRoutes() {
 };
 
 module.exports.STREAM_UA = STREAM_UA;
+// internals — exported for the test suite (tests/stream.test.js)
+module.exports.looksLikePlaylist = looksLikePlaylist;
+module.exports.rewritePlaylist = rewritePlaylist;
+module.exports.PLAYLIST_MAX_BYTES = PLAYLIST_MAX_BYTES;

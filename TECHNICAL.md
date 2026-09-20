@@ -353,15 +353,26 @@ playback 403**.
 through `/play`. If you add a new CDN host, you don't need to touch the list —
 new hosts default to the proxy, which is the safe choice.
 
-**`/play` contract** (`server.js`):
+**`/play` contract** (`src/routes/stream.js`):
 - `?url=` (required, must start `http(s)://`), `?ref=` (Referer; defaults to
   `https://peachify.top/`).
 - Sends `Referer`, a desktop Chrome UA, and any client `Range` header upstream.
 - **m3u8**: every URL in the playlist is rewritten to `/play` — bare segment
-  lines, `#EXT-X-MEDIA URI="..."` audio/subtitle groups, and absolute URLs
-  (the browser's own Referer would be our origin, which CDNs reject).
+  lines, `URI="..."` attributes on *any* tag (`#EXT-X-MEDIA` audio/subtitle
+  groups **and** `#EXT-X-I-FRAME-STREAM-INF`), and relative paths resolved
+  against the playlist URL (the browser's own Referer would be our origin,
+  which CDNs reject).
+- **Playlist detection is by CONTENT, not `Content-Type`**: several CDNs serve
+  HLS masters as `text/html` (the mendx437sim-backed `multi` provider ships
+  `./360/index.m3u8` relative variants that way). The first body chunk is
+  sniffed for `#EXTM3U`; on a match the whole playlist is buffered (≤ 4 MB) and
+  rewritten. Trusting the header instead piped the master raw, the browser
+  resolved those relative paths against *our* origin, 404'd, and the player
+  declared a healthy server dead while the same server worked when clicked
+  directly.
 - **mp4 / segments / VTT**: streamed through with `Access-Control-Allow-Origin:
-  *`, `Content-Range` preserved, `206` for ranges.
+  *`, `Content-Range` preserved, `206` for ranges. The sniffed prelude is always
+  written to the client (it may also be teed into the segment cache).
 - Response `Cache-Control: no-store`.
 
 ---
@@ -370,7 +381,7 @@ new hosts default to the proxy, which is the safe choice.
 
 | Feature | How it works |
 |---|---|
-| Server buttons | `GET /servers/...` lists the 10 names; "Auto" (default) lets the backend pick. Clicking a server reloads sources for it only. |
+| Server buttons | `GET /servers/...` lists the 11 names; "Auto" (default) lets the backend pick. Clicking a server reloads sources for it only, and that pick is **sticky**: if it has no sources the player says `No sources on <Server> — pick another server.` and STAYS there (highlight keeps the chosen server) instead of silently racing off to a different one. |
 | Auto-fallback | First load and every failure race ALL healthy servers in parallel server-side (`resolveStream` auto mode) and play whichever answers first with sources. A failing/empty server never surfaces an error — the player silently re-races (`Server X failed — playing the fastest available…`); a real error is shown only when every server is dead. Server buttons auto-highlight the provider that actually won. |
 | Quality | hls.js levels (`hls.levels` / `hls.currentLevel` by height). Stored as **`myflixerz-quality`** in localStorage (`'auto'` = ABR, or an explicit height). Non-HLS (MP4) sources re-attach with the chosen source. |
 | Audio (dub) | Dropdown is always visible. `collectDubs()` reads the current server's `dub` values, then probes `GET /dubs` once (which checks iron + multi) and merges. Picking a language the current server lacks **auto-switches the server button** to the one that has it. Stored as **`myflixerz-audio`**. |

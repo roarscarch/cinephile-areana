@@ -38,8 +38,10 @@ const Player = (() => {
   }
 
   // Direct CDNs need our /play proxy (referer + CORS); CORS-open hosts play
-  // direct. Some vidnest sources carry their own referer (goodstream etc.) —
-  // pass it through so the CDN doesn't reject the segment requests.
+  // direct. Sources carrying their OWN referer (buzz: ployan.me, multi:
+  // laika422mon, ngc: nextgencloudfabric, goodstream…) MUST keep it end to
+  // end — /play's peachify.top default 403/429s their segments. playableUrl
+  // forwards the source referer; /play's rewriter propagates it downstream.
   function playableUrl(url, referer, origin, src) {
     // Local API routes (e.g. /subtitles/subdl?zip=…) are same-origin — fetch
     // them directly. /play only proxies absolute http(s) URLs and would 400.
@@ -385,6 +387,9 @@ const Player = (() => {
       this._currentSource = src;
       this._attachId = (this._attachId || 0) + 1;
       const attachId = this._attachId; // stale handlers from older attaches are ignored
+      // Forward the SOURCE's own referer (buzz: ployan.me, multi: laika422mon…)
+      // end-to-end — never the peachify default — or gated CDNs 403/429 the
+      // segments even though the master loaded fine.
       const url = playableUrl(src.url, src.referer, src.origin);
       this.hideLoading();
 

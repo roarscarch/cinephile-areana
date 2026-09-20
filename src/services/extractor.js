@@ -320,7 +320,12 @@ async function fetchVidnestSubtitles(type, id, season, episode) {
 // awards a winner we fetch the source head server-side and only crown providers
 // whose stream is ACTUALLY playable. Passing results are cached so back-to-back
 // loads don't re-pay the master latency.
-const PROBE_STREAM_TIMEOUT_MS = 3000;
+// Bound every probe so a swallowed connection can't stall the race — but be
+// GENEROUS, because a slow-but-ALIVE CDN (ngc answered in 2.5 s on a plain
+// title) must not be declared dead. Killing providers at 3 s manufactured
+// exactly the false "no source" verdicts this path exists to avoid; the first
+// playable probe still wins instantly, so a longer ceiling costs nothing.
+const PROBE_STREAM_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS) || 8000;
 const STREAM_OK_TTL_MS = 60_000;
 const streamOkCache = new Map(); // `${fam}:${provider}:${key}` -> expiry ms
 
@@ -417,21 +422,28 @@ async function autoRace(pOrder, vOrder, key, opts) {
           return { ok: false };
         })
         .then(async (r) => {
-          left--;
-          // Only the caller-VISIBLE winner records last-known-good: a probe
-          // settling after someone else already won must not rewrite the
-          // cache with a provider nobody actually played.
-          if (r.ok && r.result.sources.length && !done) {
-            const scKey = `${r.fam}:${r.p.name}:${key}`;
-            let playable = (streamOkCache.get(scKey) || 0) > Date.now();
-            if (!playable) {
-              playable = await probeStreamPlayable(r.result.sources[0]);
-              if (playable) streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
-            }
-            if (playable) {
-              (r.fam === 'peachify' ? providerCache : vidnestCache).set(key, r.p.name);
-              finish({ won: true, result: r.result });
-            } else {
+          // `left` counts candidates that are not yet FULLY settled — i.e. it is
+          // decremented only after this candidate's probe has resolved. Doing it
+          // up-front was a real bug: an empty/failed provider that happened to
+          // settle last drove `left` to 0 and resolved {won:false} while the
+          // slow-but-playable providers' probes were still in flight, and their
+          // later finish({won:true}) became a no-op (done already true). Auto
+          // then reported "no sources" for titles whose servers were fine.
+          try {
+            // Only the caller-VISIBLE winner records last-known-good: a probe
+            // settling after someone else already won must not rewrite the
+            // cache with a provider nobody actually played.
+            if (r.ok && r.result.sources.length && !done) {
+              const scKey = `${r.fam}:${r.p.name}:${key}`;
+              let playable = (streamOkCache.get(scKey) || 0) > Date.now();
+              if (!playable) {
+                playable = await probeStreamPlayable(r.result.sources[0]);
+                if (playable) streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
+              }
+              if (playable) {
+                (r.fam === 'peachify' ? providerCache : vidnestCache).set(key, r.p.name);
+                return finish({ won: true, result: r.result });
+              }
               // API answered but the stream can't start — treat as dead, keep racing
               markDead(r.fam, r.p, key);
               fails[r.fam]++;
@@ -439,10 +451,10 @@ async function autoRace(pOrder, vOrder, key, opts) {
               if (fails[r.fam] === totals[r.fam]) {
                 familyDeadUntil.set(r.fam, Date.now() + FAMILY_TTL_MS);
               }
-              if (!left && !done) finish({ won: false, lastErr });
             }
-          } else if (!left && !done) {
-            finish({ won: false, lastErr }); // every probe failed or was empty
+          } finally {
+            left--;
+            if (!left && !done) finish({ won: false, lastErr }); // every probe failed or was empty
           }
         });
     }

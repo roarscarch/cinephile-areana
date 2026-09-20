@@ -59,8 +59,16 @@ module.exports = function mediaRoutes(tmdb) {
       const skipList = skip ? String(skip).split(',').map((s) => s.trim()).filter(Boolean) : [];
       const sources = await tmdb.fetchEpisodeSources(episodeId, mediaId, server, skipList);
       if (!sources || (sources.sources && sources.sources.length === 0)) {
-        // Graceful empty result: client handles fallback; no raw server errors shown.
-        return res.status(200).json({ provider: null, sources: [], subtitles: [], message: 'No sources available — try another server' });
+        // Graceful empty result: client handles fallback; no raw server errors
+        // shown. Keep the resolved provider name (and echo a forced `server`)
+        // so a manual pick can label and highlight the server the user chose
+        // instead of silently reverting the UI to Auto.
+        return res.status(200).json({
+          provider: (sources && sources.provider) || server || null,
+          sources: [],
+          subtitles: [],
+          message: 'No sources available — try another server',
+        });
       }
       res.json(sources);
     } catch (error) {
