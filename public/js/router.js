@@ -60,17 +60,43 @@
   function continueWatchingItems() {
     try {
       const map = JSON.parse(localStorage.getItem('myflixerz-progress') || '{}');
-      return Object.entries(map)
-        .filter(([, e]) => e.pos > 30 && (!e.dur || e.dur - e.pos > 15))
-        .map(([key, e]) => {
-          const [type, id] = key.split('/');
+      // One card per SERIES/movie: TV progress is keyed per mediaId (`tv/1396`)
+      // with the latest episodeId inside, so a show never fans out into
+      // E1/E2/E3… cards. Legacy per-episode keys (`tv/1396/1-1`) are merged in
+      // below so old saves collapse into one card too (latest watch wins).
+      const grouped = new Map(); // mediaKey -> { entry, episodeId }
+      const put = (mediaKey, episodeId, e) => {
+        if (!e || !(e.pos > 30) || (e.dur && e.dur - e.pos <= 15)) return;
+        const cur = grouped.get(mediaKey);
+        if (!cur || (e.t || 0) >= (cur.entry.t || 0)) grouped.set(mediaKey, { entry: e, episodeId });
+      };
+      for (const [key, e] of Object.entries(map)) {
+        const parts = String(key).split('/');
+        if (parts.length < 2) continue;
+        if (parts[0] === 'tv' && parts.length >= 4) {
+          // new shape: `tv/1396` + entry.episodeId
+          put(`${parts[0]}/${parts[1]}`, e.episodeId || parts.slice(2).join('-'), e);
+        } else if (parts[0] === 'tv' && parts.length === 3) {
+          // legacy shape: `tv/1396/1-1`
+          put(`${parts[0]}/${parts[1]}`, parts[2], e);
+        } else {
+          // movies (or anything else): one card per key as before
+          put(key, e.episodeId || '1-1', e);
+        }
+      }
+      return [...grouped.entries()]
+        .map(([mediaKey, { entry: e, episodeId }]) => {
+          const [type, id] = mediaKey.split('/');
+          const ep = episodeId || e.episodeId || '1-1';
           return {
-            id: `${type}/${id}`,
-            href: type === 'tv' ? `#/watch/${type}/${id}/${e.episodeId || '1-1'}` : `#/watch/${type}/${id}`,
+            id: mediaKey,
+            href: type === 'tv' ? `#/watch/${type}/${id}/${ep}` : `#/watch/${type}/${id}`,
             title: e.title || 'Continue watching',
             image: e.image || '',
             releaseDate: '',
             type,
+            // TV badge: which episode this card resumes from (S1 · E4)
+            subtitle: type === 'tv' ? epLabel(ep) : '',
             progress: e.dur ? Math.round((e.pos / e.dur) * 100) : 0,
             _t: e.t || 0,
           };
@@ -80,6 +106,12 @@
     } catch (e) {
       return [];
     }
+  }
+
+  // '1-1' → 'S1 · E1' (tolerates 's1e1', '1/1' shapes too)
+  function epLabel(ep) {
+    const m = String(ep || '').match(/^(?:s)?(\d+)(?:e|[-/])(\d+)$/i);
+    return m ? `S${m[1]} · E${m[2]}` : String(ep || '');
   }
 
   const prefetched = new Set();

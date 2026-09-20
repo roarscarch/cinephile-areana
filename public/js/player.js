@@ -253,9 +253,18 @@ const Player = (() => {
       this._subAutoDone = false;
       this._failedSubs = new Set(); // fresh title → forget past subtitle failures
       // where we left off on THIS title+episode (resume on first successful attach)
+      // TV reads the per-series entry (`tv/1396` + episodeId) with a fallback
+      // to the legacy per-episode key (`tv/1396/1-1`) from older saves.
       try {
         const map = JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{}');
-        this.resumePos = (map[`${mediaId}/${episodeId}`] || {}).pos || 0;
+        const hit = map[mediaId] && String(mediaId).startsWith('tv/')
+          ? map[mediaId]
+          : map[`${mediaId}/${episodeId}`];
+        this.resumePos = (hit || {}).pos || 0;
+        // only resume the series entry when it actually belongs to THIS episode
+        if (hit && String(mediaId).startsWith('tv/') && hit.episodeId && hit.episodeId !== episodeId) {
+          this.resumePos = 0;
+        }
       } catch (e) {
         this.resumePos = 0;
       }
@@ -484,6 +493,9 @@ const Player = (() => {
 
     // Watch-position persistence (powers resume + the Continue Watching row).
     // Throttled to one write per 5s; entry is removed once the title is over.
+    // TV is keyed per SERIES (mediaId) with the latest episodeId inside, so
+    // Continue Watching shows ONE card per show that resumes the last-watched
+    // episode — not an E1/E2/E3… fan-out. Movies keep mediaId/episodeId keys.
     _saveProgress(ended) {
       if (!this.mediaId || !this._started) return;
       const now = Date.now();
@@ -491,13 +503,26 @@ const Player = (() => {
       this._lastSave = now;
       try {
         const map = JSON.parse(localStorage.getItem(PROGRESS_KEY) || '{}');
-        const key = `${this.mediaId}/${this.episodeId}`;
+        const isTv = String(this.mediaId).startsWith('tv/');
+        const key = isTv ? this.mediaId : `${this.mediaId}/${this.episodeId}`;
         const pos = this.video.currentTime || 0;
         const dur = this.video.duration || 0;
         if (ended || (dur && pos / dur > 0.95)) {
           delete map[key];
+          if (isTv) {
+            // also drop any legacy per-episode keys for this series
+            for (const k of Object.keys(map)) {
+              if (k !== key && k.startsWith(`${this.mediaId}/`)) delete map[k];
+            }
+          }
         } else if (pos > 5) {
           map[key] = { pos, dur, title: this._title, type: this.mediaId.split('/')[0], image: this._image, episodeId: this.episodeId, t: now };
+          if (isTv) {
+            // collapse legacy per-episode keys so one series == one entry
+            for (const k of Object.keys(map)) {
+              if (k !== key && k.startsWith(`${this.mediaId}/`)) delete map[k];
+            }
+          }
         }
         localStorage.setItem(PROGRESS_KEY, JSON.stringify(map));
       } catch (e) {}

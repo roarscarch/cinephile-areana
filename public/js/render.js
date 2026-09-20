@@ -36,7 +36,7 @@
           </div>
         </div>
         <div class="card-title">${esc(item.title)}</div>
-        <div class="card-year">${esc(year)}</div>
+        <div class="card-year">${item.subtitle ? esc(item.subtitle) + (year ? " · " + esc(year) : "") : esc(year)}</div>
       </div>`;
   }
 
