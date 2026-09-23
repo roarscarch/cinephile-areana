@@ -729,7 +729,7 @@
           <span class="sub">${epLabel}</span>
         </div>
         <div class="player-shell">
-          <video controls autoplay playsinline></video>
+          <video controls autoplay playsinline preload="auto"></video>
           <div class="player-loading">
             <div class="spinner"></div>
             <div class="pl-text">Finding streams…</div>

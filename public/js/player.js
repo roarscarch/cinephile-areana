@@ -621,14 +621,21 @@ const Player = (() => {
 
       if (src.isM3U8 && window.Hls && Hls.isSupported()) {
         // High-performance HLS config: Worker-offloaded demuxing, start prefetch, and generous back-buffer
+        const conn = (typeof navigator !== 'undefined' && navigator.connection) || {};
+        // Slow networks / data-saver: start on the lowest rendition for an
+        // instant first frame and let ABR climb (default auto-detection often
+        // opens mid-ladder and stalls). Never fetch above screen size.
+        const slowStart = conn.saveData || /^(slow-2g|2g)$/.test(conn.effectiveType || '');
         this.hls = new Hls({
           enableWorker: true,
-          lowLatencyMode: true,
+          lowLatencyMode: false, // VOD: LL mode only adds playlist churn
           backBufferLength: 90,
           maxBufferLength: 35,
           maxMaxBufferLength: 60,
           maxBufferHole: 0.5,
           startFragPrefetch: true,
+          startLevel: slowStart ? 0 : -1,
+          capLevelToPlayerSize: true,
           highBufferWatchdogPeriod: 2,
           fragLoadingMaxRetry: 2,
           fragLoadingRetryDelay: 1000,
