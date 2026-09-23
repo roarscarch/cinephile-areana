@@ -28,7 +28,6 @@ export class CinephileHQ {
     if (!env.TMDB_API_KEY) throw new Error('TMDB_API_KEY env required');
     this.env = env;
     this.name = 'CinephileHQ';
-    this.baseUrl = 'https://myflixerfree.to';
     this._genresCache = null;
     this._cache = new Map();
   }
@@ -90,21 +89,11 @@ export class CinephileHQ {
     return path ? `${IMAGE_BASE}${path}` : null;
   }
 
-  _playerUrl(type, id, title, season, episode) {
-    const params = new URLSearchParams({ id, type, title: title || 'Watch Now' });
-    if (type === 'tv' && season && episode) {
-      params.set('season', season);
-      params.set('episode', episode);
-    }
-    return `${this.baseUrl}/player?${params.toString()}`;
-  }
-
   _item(id, tmdbItem, type) {
     const title = tmdbItem.title || tmdbItem.name;
     return {
       id: `${type}/${tmdbItem.id}`,
       title,
-      url: this._playerUrl(type, tmdbItem.id, title),
       image: this._img(tmdbItem.poster_path || tmdbItem.backdrop_path),
       releaseDate: (tmdbItem.release_date || tmdbItem.first_air_date || '').split('-')[0] || undefined,
       type: type === 'movie' ? 'MOVIE' : 'TVSERIES',
@@ -158,7 +147,6 @@ export class CinephileHQ {
       const info = {
         id: `${type}/${data.id}`,
         title,
-        url: this._playerUrl(type, data.id, title),
         cover: this._img(data.backdrop_path),
         image: this._img(data.poster_path),
         description: data.overview,
@@ -193,12 +181,11 @@ export class CinephileHQ {
               title: ep.name,
               number: ep.episode_number,
               season: s,
-              url: this._playerUrl('tv', data.id, title, s, ep.episode_number),
             });
           }
         });
       } else {
-        info.episodes = [{ id, title, number: 1, season: 1, url: this._playerUrl('movie', data.id, title) }];
+        info.episodes = [{ id, title, number: 1, season: 1 }];
       }
       return info;
     });
@@ -302,14 +289,14 @@ export class CinephileHQ {
         play: (await signPlayUrl(this.env, { url: s.url, referer: s.referer, origin: s.origin })) || undefined,
       });
     }
-    const embedUrl = this._playerUrl(type, id, '', season, episode);
+    // NOTE: no embedUrl — the old myflixerfree.to referral links were unused
+    // by the frontend (navigation uses hash routes + media IDs).
     return {
       headers: { Referer: 'https://peachify.top/' },
       sources,
       subtitles: [],
       provider: stream.provider,
       server: stream.provider,
-      embedUrl,
     };
   }
 
