@@ -1,16 +1,67 @@
 // Thin client for the MyFlixz API.
+//
+// Free load balancer: every call tries same-origin first, then the mirror
+// backend. Either deployment can die and the app keeps working — no LB server
+// to host, no request caps, nothing to pay. The winner is pinned per day so
+// repeat calls reuse warm caches instead of flapping. (/sign stays
+// same-origin by design — see player.js.)
 const API = (() => {
+  const MIRRORS = ['https://cinephilia-vercel.vercel.app', 'https://cinephile-areana.pages.dev'];
+  const PIN_KEY = 'myflixerz-api-base';
+  const PIN_TTL = 24 * 60 * 60 * 1000;
+
+  function bases() {
+    const same = (typeof location !== 'undefined' && location.origin) || '';
+    const list = [same, ...MIRRORS.filter((m) => m !== same)];
+    let pinned = '';
+    try {
+      const raw = localStorage.getItem(PIN_KEY);
+      if (raw) {
+        const { base, ts } = JSON.parse(raw);
+        if (base && Date.now() - ts < PIN_TTL) pinned = base;
+      }
+    } catch {}
+    if (pinned && pinned !== list[0]) return [pinned, ...list.filter((b) => b !== pinned)];
+    return list;
+  }
+
+  function pin(base) {
+    try {
+      localStorage.setItem(PIN_KEY, JSON.stringify({ base, ts: Date.now() }));
+    } catch {}
+  }
+
   async function get(path) {
-    const res = await fetch(path);
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
+    let lastErr = null;
+    for (const base of bases()) {
+      let res;
+      try {
+        res = await fetch(base + path);
+      } catch (e) {
+        lastErr = e; // network down / backend dead -> try next mirror
+        continue;
+      }
+      if (res.ok) {
+        pin(base);
+        return res.json();
+      }
+      // 429/5xx may succeed on the mirror; 4xx will fail everywhere — stop.
+      if (res.status !== 429 && res.status < 500) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j.error) msg = j.error;
+        } catch (e) {}
+        throw new Error(msg);
+      }
       try {
         const j = await res.json();
-        if (j.error) msg = j.error;
-      } catch (e) {}
-      throw new Error(msg);
+        lastErr = new Error((j && j.error) || `HTTP ${res.status}`);
+      } catch (e) {
+        lastErr = new Error(`HTTP ${res.status}`);
+      }
     }
-    return res.json();
+    throw lastErr || new Error('All API backends failed');
   }
 
   return {
