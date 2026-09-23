@@ -53,6 +53,47 @@
     window.scrollTo({ top: 0 });
   }
 
+  // ---- watchlist (localStorage, per-user, no backend) ----
+  const WL_KEY = 'cinephile-watchlist';
+  const WL_MAX = 100;
+  function getWatchlist() {
+    try {
+      const list = JSON.parse(localStorage.getItem(WL_KEY) || '[]');
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+  function inWatchlist(mediaId) {
+    return getWatchlist().some((w) => w.id === mediaId);
+  }
+  // Returns true if now saved, false if removed.
+  function toggleWatchlist(entry) {
+    let list = getWatchlist().filter((w) => w.id !== entry.id);
+    let saved = false;
+    if (list.length === getWatchlist().length) {
+      list.unshift({ id: entry.id, title: entry.title || 'Untitled', image: entry.image || '', releaseDate: entry.releaseDate || '', type: entry.type });
+      saved = true;
+    }
+    try {
+      localStorage.setItem(WL_KEY, JSON.stringify(list.slice(0, WL_MAX)));
+    } catch (e) {}
+    return saved;
+  }
+  function fillWatchlistRow() {
+    const items = getWatchlist();
+    const wl = view.querySelector('#wlSection');
+    if (!wl) return;
+    if (!items.length) {
+      wl.hidden = true;
+      return;
+    }
+    wl.hidden = false;
+    wl.querySelector('.row-wrap').outerHTML = rowWithArrows(items.map(card).join(''));
+    bindRowArrows(wl);
+    bindCards(wl);
+  }
+
   // ---- continue watching (from saved watch positions) ----
   function fmtTime(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
@@ -288,6 +329,8 @@
       cw.hidden = false;
       cw.querySelector('.row-wrap').outerHTML = rowWithArrows(cwItems.map(card).join(''));
     }
+    // My List row from the watchlist (hidden when empty)
+    fillWatchlistRow();
 
     if (ssr) {
       // Trending rows are already painted server-side — wire them up with zero
@@ -489,6 +532,7 @@
             <p class="detail-desc">${escapeHtml(info.description || 'No description available.')}</p>
             <div class="play-actions">
               <button class="btn btn-primary" id="playBtn">Watch now</button>
+              <button class="btn" id="wlBtn" title="Save to My List">+ My List</button>
               <button class="btn" id="shareBtn" title="Copy a shareable link with preview">Share</button>
             </div>
           </div>
@@ -523,9 +567,20 @@
       }
     });
 
+    // watchlist toggle → button label + toast reflect state
+    const wlBtn = view.querySelector('#wlBtn');
+    const paintWl = () => {
+      wlBtn.textContent = inWatchlist(mediaId) ? '✓ In My List' : '+ My List';
+    };
+    paintWl();
+    wlBtn.addEventListener('click', () => {
+      const saved = toggleWatchlist({ id: mediaId, title: info.title, image: info.image, releaseDate: info.releaseDate, type });
+      paintWl();
+      toastMsg(saved ? 'Saved to My List.' : 'Removed from My List.');
+    });
+    const shareBtn = view.querySelector('#shareBtn');
     // share button → canonical /watch link (server renders OG/Twitter
     // preview meta for crawlers; humans redirect into the hash app)
-    const shareBtn = view.querySelector('#shareBtn');
     shareBtn.addEventListener('click', async () => {
       const link = `${SHARE_ORIGIN}/watch/${mediaId}`;
       try {
