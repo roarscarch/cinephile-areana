@@ -21,17 +21,6 @@ function withDeadline(promise, ms) {
 }
 
 const SUB_VALID_CACHE = new Map();
-const SUB_VALID_MAX = 2000;
-function capValidCache() {
-  if (SUB_VALID_CACHE.size <= SUB_VALID_MAX) return;
-  const drop = SUB_VALID_CACHE.size - SUB_VALID_MAX;
-  const it = SUB_VALID_CACHE.keys();
-  for (let i = 0; i < drop; i++) {
-    const k = it.next().value;
-    if (k === undefined) break;
-    SUB_VALID_CACHE.delete(k);
-  }
-}
 const SUB_VALID_TTL = 10 * 60 * 1000;
 
 export class CinephileHQ {
@@ -272,11 +261,9 @@ export class CinephileHQ {
         }
         const ok = /^WEBVTT/m.test(head) || /-->/m.test(head);
         SUB_VALID_CACHE.set(s.url, { ok, ts: Date.now() });
-        capValidCache();
         return ok ? s : null;
       } catch {
         SUB_VALID_CACHE.set(s.url, { ok: false, ts: Date.now() });
-        capValidCache();
         return null;
       }
     };

@@ -39,18 +39,6 @@ const DEAD_TTL_MS = 30_000;
 const FAMILY_TTL_MS = 60_000;
 
 // ---- per-isolate caches (same role as the Node Maps) ----
-// Bounded: uncapped Maps grow forever on warm isolates. capMap keeps newest N.
-const CACHE_MAX = 1000;
-function capMap(map, max = CACHE_MAX) {
-  if (map.size <= max) return;
-  const drop = map.size - max;
-  const it = map.keys();
-  for (let i = 0; i < drop; i++) {
-    const k = it.next().value;
-    if (k === undefined) break;
-    map.delete(k);
-  }
-}
 const providerCache = new Map();
 const vidnestCache = new Map();
 const subsCache = new Map();
@@ -61,7 +49,6 @@ const streamOkCache = new Map();
 
 function markDead(family, provider, key) {
   deadCache.set(`${family}:${provider.name}:${key}`, Date.now() + DEAD_TTL_MS);
-  capMap(deadCache, 2000);
 }
 function isDead(family, provider, key) {
   return (deadCache.get(`${family}:${provider.name}:${key}`) || 0) > Date.now();
@@ -118,14 +105,9 @@ export async function signPlayUrl(env, { url, referer, origin }) {
 }
 
 // ---- fetch helpers (axios-shaped errors carry .status) ----
-async function fetchJSON(url, { headers = {}, timeout = PROBE_TIMEOUT_MS, signal } = {}) {
+async function fetchJSON(url, { headers = {}, timeout = PROBE_TIMEOUT_MS } = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeout);
-  const onAbort = signal ? () => ctrl.abort() : null;
-  if (signal) {
-    if (signal.aborted) ctrl.abort();
-    else signal.addEventListener('abort', onAbort, { once: true });
-  }
   try {
     const r = await fetch(url, { headers, signal: ctrl.signal, redirect: 'follow' });
     if (!r.ok) {
@@ -136,7 +118,6 @@ async function fetchJSON(url, { headers = {}, timeout = PROBE_TIMEOUT_MS, signal
     return await r.json();
   } finally {
     clearTimeout(t);
-    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
   }
 }
 function withTimeout(promise, ms, label) {
@@ -163,13 +144,12 @@ export async function decryptPayload(payload, keyHex) {
   return JSON.parse(new TextDecoder().decode(plain));
 }
 
-async function fetchProvider(env, provider, type, id, season, episode, signal) {
+async function fetchProvider(env, provider, type, id, season, episode) {
   let url = `${PEACHIFY_API}/${provider.path}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
     const json = await fetchJSON(url, {
       headers: { Referer: PEACHIFY_REFERER, Origin: 'https://peachify.top', 'User-Agent': STREAM_UA },
-      ...(signal ? { signal } : {}),
     });
     if (json && json.isEncrypted) return decryptPayload(json.data, env.PEACHIFY_KEY_HEX);
     return json;
@@ -196,7 +176,6 @@ export async function fetchSubtitles(env, type, id, season, episode) {
       }))
       .filter((s) => s.url);
     subsCache.set(key, subs);
-    capMap(subsCache);
     return subs;
   } catch {
     return [];
@@ -217,14 +196,13 @@ export function vidnestDecode(data, alphabet) {
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
-async function fetchVidnestProvider(env, provider, type, id, season, episode, signal) {
+async function fetchVidnestProvider(env, provider, type, id, season, episode) {
   const slug = provider.slug || provider.name;
   let url = `${VIDNEST_API}/${slug}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
     const json = await fetchJSON(url, {
       headers: { Referer: VIDNEST_REFERER, Origin: 'https://vidnest.fun', 'User-Agent': STREAM_UA },
-      ...(signal ? { signal } : {}),
     });
     if (!json || !json.data) throw new Error(`vidnest ${provider.name}: unexpected response`);
     return JSON.parse(vidnestDecode(json.data, env.VIDNEST_ALPHABET));
@@ -286,7 +264,6 @@ async function resolveVidnest(env, { type, id, season, episode, server }) {
     }
     if (!s.value.sources.length) continue;
     vidnestCache.set(key, p.name);
-    capMap(vidnestCache);
     return s.value;
   }
   throw new Error(`No vidnest source found${lastError ? ` (${lastError.message})` : ''}`);
@@ -307,7 +284,6 @@ export async function fetchVidnestSubtitles(type, id, season, episode) {
         .map((s) => ({ url: s.file || s.url, label: s.label, lang: s.label || null }))
         .filter((s) => s.url);
       vdrkSubsCache.set(key, subs);
-      capMap(vdrkSubsCache);
       return subs;
     } finally {
       clearTimeout(t);
@@ -318,18 +294,8 @@ export async function fetchVidnestSubtitles(type, id, season, episode) {
 }
 
 // ---- startability probe (same contract as Node version) ----
-async function probeStreamPlayable(src, signal) {
+async function probeStreamPlayable(src) {
   if (!src || !src.url) return false;
-  const fail = (e) => {
-    // Aborted losers must NEVER look like failures — rethrown past the
-    // not-startable bookkeeping by the caller.
-    if ((signal && signal.aborted) || (e && (e.name === 'AbortError' || e.aborted))) {
-      const ae = new Error('probe aborted (race won elsewhere)');
-      ae.aborted = true;
-      throw ae;
-    }
-    return false;
-  };
   try {
     const headers = { 'User-Agent': STREAM_UA, Referer: src.referer || PEACHIFY_REFERER };
     if (src.origin) headers.Origin = src.origin;
@@ -337,81 +303,23 @@ async function probeStreamPlayable(src, signal) {
       src.isM3U8 ||
       /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url) ||
       /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
-    if (!isM3U8) {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), PROBE_STREAM_TIMEOUT_MS);
-      const onAbort = signal ? () => ctrl.abort() : null;
-      if (signal) {
-        if (signal.aborted) ctrl.abort();
-        else signal.addEventListener('abort', onAbort, { once: true });
-      }
-      try {
-        const r = await fetch(src.url, {
-          headers: { ...headers, Range: 'bytes=0-0' },
-          signal: ctrl.signal,
-          redirect: 'follow',
-        });
-        if (!r || (r.status !== 200 && r.status !== 206)) return false;
-        return (await r.arrayBuffer()).byteLength > 0;
-      } catch (e) {
-        return fail(e);
-      } finally {
-        clearTimeout(t);
-        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-      }
-    }
-    // Playlist: only the head is ever read — range first, full GET fallback.
-    try {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), PROBE_STREAM_TIMEOUT_MS);
-      const onAbort = signal ? () => ctrl.abort() : null;
-      if (signal) {
-        if (signal.aborted) ctrl.abort();
-        else signal.addEventListener('abort', onAbort, { once: true });
-      }
-      try {
-        const r = await fetch(src.url, {
-          headers: { ...headers, Range: 'bytes=0-2047' },
-          signal: ctrl.signal,
-          redirect: 'follow',
-        });
-        if (r && (r.status === 206 || r.status === 200)) {
-          const head = (await r.text()).slice(0, 300);
-          const ct = r.headers.get('content-type') || '';
-          if (/#EXT/i.test(head) || ct.includes('mpegurl')) return true;
-          return false; // head (206) or full body (200) without markers
-        }
-      } catch (e) {
-        if (signal && signal.aborted) return fail(e);
-        // 416 / reset / timeout → full-GET fallback below
-      } finally {
-        clearTimeout(t);
-        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-      }
-    } catch (e) {
-      return fail(e);
-    }
+    if (!isM3U8) headers.Range = 'bytes=0-0';
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), PROBE_STREAM_TIMEOUT_MS);
-    const onAbort = signal ? () => ctrl.abort() : null;
-    if (signal) {
-      if (signal.aborted) ctrl.abort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
+    let res;
     try {
-      const r = await fetch(src.url, { headers, signal: ctrl.signal, redirect: 'follow' });
-      if (!r || (r.status !== 200 && r.status !== 206)) return false;
-      const head = (await r.text()).slice(0, 300);
-      const ct = r.headers.get('content-type') || '';
-      return /#EXT/i.test(head) || ct.includes('mpegurl');
-    } catch (e) {
-      return fail(e);
+      res = await fetch(src.url, { headers, signal: ctrl.signal, redirect: 'follow' });
     } finally {
       clearTimeout(t);
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
     }
-  } catch (e) {
-    if (e && e.aborted) throw e;
+    if (!res || (res.status !== 200 && res.status !== 206)) return false;
+    if (isM3U8) {
+      const head = (await res.text()).slice(0, 300);
+      const ct = res.headers.get('content-type') || '';
+      return /#EXT/i.test(head) || ct.includes('mpegurl');
+    }
+    return (await res.arrayBuffer()).byteLength > 0;
+  } catch {
     return false;
   }
 }
@@ -428,28 +336,18 @@ async function autoRace(env, pOrder, vOrder, key, opts) {
     const lastErr = {};
     const fails = { peachify: 0, vidnest: 0 };
     const totals = { peachify: pOrder.length, vidnest: vOrder.length };
-    // Abort losers the moment a winner is crowned (sockets released,
-    // upstreams spared). Aborts stay bookkeeping-neutral — see guards.
-    const controllers = cand.map(() => new AbortController());
     const finish = (out) => {
       if (!done) {
         done = true;
-        for (const c of controllers) {
-          try {
-            c.abort();
-          } catch {}
-        }
         resolve(out);
       }
     };
-    for (let ci = 0; ci < cand.length; ci++) {
-      const [fam, p] = cand[ci];
-      const ctrl = controllers[ci];
+    for (const [fam, p] of cand) {
       (fam === 'peachify'
-        ? fetchProvider(env, p, opts.type, opts.id, opts.season, opts.episode, ctrl.signal).then((d) =>
+        ? fetchProvider(env, p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
             toResult(p, d)
           )
-        : fetchVidnestProvider(env, p, opts.type, opts.id, opts.season, opts.episode, ctrl.signal).then((d) =>
+        : fetchVidnestProvider(env, p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
             vidnestToResult(p, d)
           )
       )
@@ -458,49 +356,29 @@ async function autoRace(env, pOrder, vOrder, key, opts) {
           return { ok: true, fam, p, result };
         })
         .catch((e) => {
-          if ((e && (e.name === 'AbortError' || e.aborted)) || ctrl.signal.aborted) {
-            return { ok: false, aborted: true };
-          }
           markDead(fam, p, key);
           fails[fam]++;
           lastErr[fam] = e && e.message;
-          if (fails[fam] === totals[fam]) {
-            familyDeadUntil.set(fam, Date.now() + FAMILY_TTL_MS);
-            capMap(familyDeadUntil, 50);
-          }
+          if (fails[fam] === totals[fam]) familyDeadUntil.set(fam, Date.now() + FAMILY_TTL_MS);
           return { ok: false };
         })
         .then(async (r) => {
           try {
-            if (r.aborted) return;
             if (r.ok && r.result.sources.length && !done) {
               const scKey = `${r.fam}:${r.p.name}:${key}`;
               let playable = (streamOkCache.get(scKey) || 0) > Date.now();
               if (!playable) {
-                try {
-                  playable = await probeStreamPlayable(r.result.sources[0], ctrl.signal);
-                } catch (pe) {
-                  if (pe && pe.aborted) return;
-                  throw pe;
-                }
-                if (playable) {
-                  streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
-                  capMap(streamOkCache, 2000);
-                }
+                playable = await probeStreamPlayable(r.result.sources[0]);
+                if (playable) streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
                 (r.fam === 'peachify' ? providerCache : vidnestCache).set(key, r.p.name);
-                capMap(providerCache);
-                capMap(vidnestCache);
                 return finish({ won: true, result: r.result });
               }
               markDead(r.fam, r.p, key);
               fails[r.fam]++;
               lastErr[r.fam] = `${r.p.name}: stream not startable`;
-              if (fails[r.fam] === totals[r.fam]) {
-                familyDeadUntil.set(r.fam, Date.now() + FAMILY_TTL_MS);
-                capMap(familyDeadUntil, 50);
-              }
+              if (fails[r.fam] === totals[r.fam]) familyDeadUntil.set(r.fam, Date.now() + FAMILY_TTL_MS);
             }
           } finally {
             left--;

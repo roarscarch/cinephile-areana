@@ -100,20 +100,6 @@ const b64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'
 // Per-title caches: which provider last succeeded (skip the empty ones next time)
 // and resolved subtitles. Both are stable per title — makes repeat plays instant.
 // One cache per family (provider names live in different namespaces).
-// ALL of these are bounded: uncapped Maps grew forever on long-lived processes
-// (Docker/VPS) — one title per watch, never evicted. capMap() keeps the newest
-// N entries and sweeps expired dead-marks opportunistically.
-const CACHE_MAX = 1000;
-function capMap(map, max = CACHE_MAX) {
-  if (map.size <= max) return;
-  const drop = map.size - max;
-  const it = map.keys();
-  for (let i = 0; i < drop; i++) {
-    const k = it.next().value;
-    if (k === undefined) break;
-    map.delete(k);
-  }
-}
 const providerCache = new Map();
 const vidnestCache = new Map();
 const subsCache = new Map();
@@ -127,7 +113,6 @@ const deadCache = new Map(); // `${family}:${providerName}:${titleKey}` -> expir
 
 function markDead(family, provider, key) {
   deadCache.set(`${family}:${provider.name}:${key}`, Date.now() + DEAD_TTL_MS);
-  capMap(deadCache, 2000);
 }
 
 function isDead(family, provider, key) {
@@ -187,7 +172,7 @@ function decryptPayload(payload) {
   return JSON.parse(plain.toString());
 }
 
-async function fetchProvider(provider, type, id, season, episode, signal) {
+async function fetchProvider(provider, type, id, season, episode) {
   let url = `${PEACHIFY_API}/${provider.path}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
@@ -198,7 +183,6 @@ async function fetchProvider(provider, type, id, season, episode, signal) {
         'User-Agent': STREAM_UA,
       },
       timeout: PROBE_TIMEOUT_MS,
-      ...(signal ? { signal } : {}),
     });
     const json = res.data;
     if (json && json.isEncrypted) return decryptPayload(json.data);
@@ -232,7 +216,6 @@ async function fetchSubtitles(type, id, season, episode) {
       }))
       .filter((s) => s.url);
     subsCache.set(key, subs);
-    capMap(subsCache);
     return subs;
   } catch (e) {
     return [];
@@ -254,7 +237,7 @@ function vidnestDecode(data) {
   return Buffer.from(bytes).toString('utf8');
 }
 
-async function fetchVidnestProvider(provider, type, id, season, episode, signal) {
+async function fetchVidnestProvider(provider, type, id, season, episode) {
   const slug = provider.slug || provider.name;
   let url = `${VIDNEST_API}/${slug}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
@@ -266,7 +249,6 @@ async function fetchVidnestProvider(provider, type, id, season, episode, signal)
         'User-Agent': STREAM_UA,
       },
       timeout: PROBE_TIMEOUT_MS,
-      ...(signal ? { signal } : {}),
     });
     const json = res.data;
     if (!json || !json.data) throw new Error(`vidnest ${provider.name}: unexpected response`);
@@ -345,7 +327,6 @@ async function resolveVidnest({ type, id, season, episode, server }) {
     }
     if (!s.value.sources.length) continue;
     vidnestCache.set(key, p.name);
-    capMap(vidnestCache);
     return s.value;
   }
   throw new Error(`No vidnest source found${lastError ? ` (${lastError.message})` : ''}`);
@@ -365,7 +346,6 @@ async function fetchVidnestSubtitles(type, id, season, episode) {
       .map((s) => ({ url: s.file || s.url, label: s.label, lang: s.label || null }))
       .filter((s) => s.url);
     vdrkSubsCache.set(key, subs);
-    capMap(vdrkSubsCache);
     return subs;
   } catch (e) {
     return [];
@@ -387,7 +367,7 @@ const PROBE_STREAM_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS) || 8000;
 const STREAM_OK_TTL_MS = 60_000;
 const streamOkCache = new Map(); // `${fam}:${provider}:${key}` -> expiry ms
 
-async function probeStreamPlayable(src, signal) {
+async function probeStreamPlayable(src) {
   if (!src || !src.url) return false;
   try {
     const headers = { 'User-Agent': STREAM_UA };
@@ -403,66 +383,25 @@ async function probeStreamPlayable(src, signal) {
     const isM3U8 = src.isM3U8
       || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url)
       || /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
-    if (!isM3U8) {
-      // mp4/mkv — 1 ranged byte proves playability, nothing more is fetched
-      const res = await httpClient.get(src.url, {
-        headers: { ...headers, Range: 'bytes=0-0' },
-        timeout: PROBE_STREAM_TIMEOUT_MS,
-        maxRedirects: 4,
-        responseType: 'arraybuffer',
-        signal,
-      });
-      if (!res || (res.status !== 200 && res.status !== 206)) {
-        console.error(`[probe] status ${(res && res.status)} for ${src.url}`);
-        return false;
-      }
-      return res.data && res.data.byteLength > 0;
-    }
-    // Playlist: only the first 2 KB are ever read (the #EXTM3U head), so ask
-    // for a range up front — full masters are fetched only when a CDN can't
-    // do ranges (416) or errored mid-probe.
-    try {
-      const res = await httpClient.get(src.url, {
-        headers: { ...headers, Range: 'bytes=0-2047' },
-        timeout: PROBE_STREAM_TIMEOUT_MS,
-        maxRedirects: 4,
-        responseType: 'arraybuffer',
-        signal,
-      });
-      if (res && (res.status === 206 || res.status === 200)) {
-        const head = Buffer.from(res.data || []).toString('utf8', 0, 300);
-        const ct = String((res.headers && res.headers['content-type']) || '');
-        if (/#EXT/i.test(head) || ct.includes('mpegurl')) return true;
-        if (res.status === 206) return false; // got the head — not a playlist
-        return false; // 200 full body without markers — no second fetch
-      }
-    } catch (re) {
-      if (signal && signal.aborted) throw re; // race already won — stay silent
-      // 416 / reset / timeout on the ranged attempt → full-GET fallback below
-    }
     const res = await httpClient.get(src.url, {
       headers,
       timeout: PROBE_STREAM_TIMEOUT_MS,
       maxRedirects: 4,
       responseType: 'arraybuffer',
-      signal,
+      ...(isM3U8 ? {} : { headers: { ...headers, Range: 'bytes=0-0' } }),
     });
     if (!res || (res.status !== 200 && res.status !== 206)) {
       console.error(`[probe] status ${(res && res.status)} for ${src.url}`);
       return false;
     }
-    const head = Buffer.from(res.data || []).toString('utf8', 0, 300);
-    const ok = /#EXT/i.test(head) || String(res.headers['content-type'] || '').includes('mpegurl');
-    if (!ok) console.error(`[probe] not m3u8 head: ${head.slice(0, 100)}`);
-    return ok;
-  } catch (e) {
-    // Aborted losers must NEVER look like failures (no dead-marks) — the
-    // race rethrows these past the not-startable bookkeeping.
-    if ((signal && signal.aborted) || (e && (e.code === 'ERR_CANCELED' || e.aborted))) {
-      const ae = new Error('probe aborted (race won elsewhere)');
-      ae.aborted = true;
-      throw ae;
+    if (isM3U8) {
+      const head = Buffer.from(res.data || []).toString('utf8', 0, 300);
+      const ok = /#EXT/i.test(head) || String(res.headers['content-type'] || '').includes('mpegurl');
+      if (!ok) console.error(`[probe] not m3u8 head: ${head.slice(0, 100)}`);
+      return ok;
     }
+    return (res.data && res.data.byteLength > 0); // mp4/mkv — any ranged bytes is playable
+  } catch (e) {
     console.error(`[probe] error for ${src.url}:`, e.message || e);
     return false;
   }
@@ -497,29 +436,18 @@ async function autoRace(pOrder, vOrder, key, opts) {
     const lastErr = {};
     const fails = { peachify: 0, vidnest: 0 };
     const totals = { peachify: pOrder.length, vidnest: vOrder.length };
-    // One abort gate per candidate: the moment a winner is crowned, every
-    // still-flying upstream fetch is cancelled (sockets released, upstreams
-    // spared). Aborts are silent by contract — see the guards below.
-    const controllers = cand.map(() => new AbortController());
     const finish = (out) => {
       if (!done) {
         done = true;
-        for (const c of controllers) {
-          try {
-            c.abort();
-          } catch {}
-        }
         resolve(out);
       }
     };
-    for (let ci = 0; ci < cand.length; ci++) {
-      const [fam, p] = cand[ci];
-      const ctrl = controllers[ci];
+    for (const [fam, p] of cand) {
       (fam === 'peachify'
-        ? fetchProvider(p, opts.type, opts.id, opts.season, opts.episode, ctrl.signal).then((d) =>
+        ? fetchProvider(p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
             toResult(p, d)
           )
-        : fetchVidnestProvider(p, opts.type, opts.id, opts.season, opts.episode, ctrl.signal).then((d) =>
+        : fetchVidnestProvider(p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
             vidnestToResult(p, d)
           )
       )
@@ -528,11 +456,6 @@ async function autoRace(pOrder, vOrder, key, opts) {
           return { ok: true, fam, p, result };
         })
         .catch((e) => {
-          // Aborted losers are bookkeeping-neutral: no log spam, no
-          // dead-marks, no family-breaker votes. Only real failures count.
-          if ((e && (e.code === 'ERR_CANCELED' || e.aborted)) || ctrl.signal.aborted) {
-            return { ok: false, aborted: true };
-          }
           console.error(`[extractor] ${fam} ${p.name} error:`, e.message || e);
           markDead(fam, p, key);
           fails[fam]++;
@@ -540,7 +463,6 @@ async function autoRace(pOrder, vOrder, key, opts) {
           // whole family rejected (hangs/5xx/DNS) → trip: next titles skip us
           if (fails[fam] === totals[fam]) {
             familyDeadUntil.set(fam, Date.now() + FAMILY_TTL_MS);
-            capMap(familyDeadUntil, 50);
           }
           return { ok: false };
         })
@@ -553,7 +475,6 @@ async function autoRace(pOrder, vOrder, key, opts) {
           // later finish({won:true}) became a no-op (done already true). Auto
           // then reported "no sources" for titles whose servers were fine.
           try {
-            if (r.aborted) return;
             // Only the caller-VISIBLE winner records last-known-good: a probe
             // settling after someone else already won must not rewrite the
             // cache with a provider nobody actually played.
@@ -561,21 +482,11 @@ async function autoRace(pOrder, vOrder, key, opts) {
               const scKey = `${r.fam}:${r.p.name}:${key}`;
               let playable = (streamOkCache.get(scKey) || 0) > Date.now();
               if (!playable) {
-                try {
-                  playable = await probeStreamPlayable(r.result.sources[0], ctrl.signal);
-                } catch (pe) {
-                  if (pe && pe.aborted) return; // loser aborted mid-probe
-                  throw pe;
-                }
-                if (playable) {
-                  streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
-                  capMap(streamOkCache, 2000);
-                }
+                playable = await probeStreamPlayable(r.result.sources[0]);
+                if (playable) streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
                 (r.fam === 'peachify' ? providerCache : vidnestCache).set(key, r.p.name);
-                capMap(providerCache);
-                capMap(vidnestCache);
                 return finish({ won: true, result: r.result });
               }
               // API answered but the stream can't start — treat as dead, keep racing
@@ -584,7 +495,6 @@ async function autoRace(pOrder, vOrder, key, opts) {
               lastErr[r.fam] = `${r.p.name}: stream not startable`;
               if (fails[r.fam] === totals[r.fam]) {
                 familyDeadUntil.set(r.fam, Date.now() + FAMILY_TTL_MS);
-                capMap(familyDeadUntil, 50);
               }
             }
           } finally {
@@ -719,6 +629,4 @@ module.exports = {
   vidnestToResult,
   toResult,
   VIDNEST_ALPHABET,
-  probeStreamPlayable,
-  capMap,
 };
