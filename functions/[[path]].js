@@ -84,8 +84,31 @@ export async function onRequest({ request, env, params, next, waitUntil }) {
       return Response.redirect(target, 302);
     }
 
-    // ---- /download: needs ffmpeg — hand off to the Vercel deployment ----
+    // ---- /download: needs ffmpeg + long-lived connections — neither exists
+    // on serverless (Vercel kills functions at 60 s mid-movie, Workers have
+    // no ffmpeg). Direct-file downloads (mp4, no subs) are a plain
+    // byte-passthrough that CAN finish for episode-sized files, so those
+    // hand off to the Vercel deployment (untouched). Anything needing a
+    // remux (hls=1 or subtitle muxing) would die mid-stream with
+    // ERR_INVALID_RESPONSE — fail fast here with an explanation instead of
+    // navigating the user to a dead error page.
     if (a === 'download') {
+      const needsRemux = q.get('hls') === '1' || (q.get('subs') || '').trim() !== '';
+      if (needsRemux) {
+        const back = `<a href="javascript:history.back()">← back to the movie</a>`;
+        return new Response(
+          `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Download unavailable</title></head>` +
+            `<body style="font-family:system-ui;background:#0a0a12;color:#eee;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0">` +
+            `<main style="max-width:34rem;padding:2rem;text-align:center">` +
+            `<h1>Movie downloads need the self-hosted app</h1>` +
+            `<p>Converting this stream to MP4 takes minutes, but free serverless hosting kills ` +
+            `long downloads mid-file. Direct episode files still download fine.</p>` +
+            `<p>For full-movie downloads, run <code>docker compose up -d --build</code> ` +
+            `on your own machine (ffmpeg included) and download from there.</p>` +
+            `<p>${back}</p></main></body></html>`,
+          { status: 422, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+        );
+      }
       const base = (env.DOWNLOAD_FALLBACK || DOWNLOAD_FALLBACK_DEFAULT).replace(/\/$/, '');
       return Response.redirect(`${base}${url.pathname}${url.search}`, 302);
     }
