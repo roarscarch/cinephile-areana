@@ -30,6 +30,17 @@ function withDeadline(promise, ms) {
 // Validation results are cached per URL so dead tracks only pay their timeout
 // once across sessions (they stay dead for the cache TTL, 10 min).
 const SUB_VALID_CACHE = new Map(); // url -> { ok: boolean, ts: number }
+const SUB_VALID_MAX = 2000;
+function capValidCache() {
+  if (SUB_VALID_CACHE.size <= SUB_VALID_MAX) return;
+  const drop = SUB_VALID_CACHE.size - SUB_VALID_MAX;
+  const it = SUB_VALID_CACHE.keys();
+  for (let i = 0; i < drop; i++) {
+    const k = it.next().value;
+    if (k === undefined) break;
+    SUB_VALID_CACHE.delete(k);
+  }
+}
 const SUB_VALID_TTL = 10 * 60 * 1000;
 
 class CinephileHQ {
@@ -293,9 +304,11 @@ class CinephileHQ {
         const head = (await r.text()).slice(0, 4000);
         const ok = /^WEBVTT/m.test(head) || /-->/m.test(head); // subtitle text, not a zip/html/error
         SUB_VALID_CACHE.set(s.url, { ok, ts: Date.now() });
+        capValidCache();
         return ok ? s : null;
       } catch (e) {
         SUB_VALID_CACHE.set(s.url, { ok: false, ts: Date.now() });
+        capValidCache();
         return null;
       }
     };
