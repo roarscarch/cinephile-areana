@@ -12,12 +12,13 @@ const Player = (() => {
     'sparkvid.workers.dev',      // vidxyz
     'remoteconsultinggroup.site' // wolf/ngc — ACAO: *, plays headerless
   ];
-  // Display names are generic on purpose (Server 1..N) — upstream
-  // provider identities stay out of the UI. Numbering follows a fixed
-  // alphabetical order so each server keeps its number across deploys;
-  // internal names still ride data attributes + API calls untouched.
+  // Display names are compact on purpose (S1..S11) — upstream provider
+  // identities stay out of the UI and buttons stay narrow. Numbering follows
+  // a fixed alphabetical order so each server keeps its number across
+  // deploys; internal names still ride data attributes + API calls untouched.
+  // Buttons sort by this order (the API returns direct-first, not numeric).
   const SERVER_ORDER = ['buzz', 'hollymoviehd', 'horizon', 'iron', 'multi', 'ngc', 'rogflix', 'spider', 'videasy', 'vidxyz', 'wolf'];
-  const PROVIDER_LABELS = Object.fromEntries(SERVER_ORDER.map((n, i) => [n, `Server ${i + 1}`]));
+  const PROVIDER_LABELS = Object.fromEntries(SERVER_ORDER.map((n, i) => [n, `S${i + 1}`]));
 
   // Option A: video bytes ride the Cloudflare Worker, not Vercel.
   // Override with window.__PLAY_PROXY__ (e.g. in index.html) if the URL changes.
@@ -902,5 +903,5 @@ const Player = (() => {
     }
   }
 
-  return { MoviePlayer, PROVIDER_LABELS };
+  return { MoviePlayer, PROVIDER_LABELS, SERVER_ORDER };
 })();

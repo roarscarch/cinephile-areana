@@ -701,10 +701,16 @@
     try {
       const servers = await API.servers();
       const labels = Player.PROVIDER_LABELS;
+      const order = Player.SERVER_ORDER || [];
+      const rank = (name) => {
+        const i = order.indexOf(name);
+        return i < 0 ? 999 : i;
+      };
       bar.innerHTML =
         `<button class="server-btn active" data-server="">Auto</button>` +
-        servers
-          .map((s) => `<button class="server-btn" data-server="${s.name}">${labels[s.name] || s.name}</button>`)
+        [...servers]
+          .sort((a, b) => rank(a.name) - rank(b.name))
+          .map((s) => `<button class="server-btn" data-server="${s.name}" title="Server ${rank(s.name) + 1}">${labels[s.name] || s.name}</button>`)
           .join('');
       bar.querySelectorAll('.server-btn').forEach((b) =>
         b.addEventListener('click', () => {
@@ -801,7 +807,7 @@
       );
       const n = (player.subtitles || []).length;
       document.getElementById('providerInfo').textContent =
-        p ? `Server: ${labels[p] || p}${n ? ` · ${n} subtitle${n === 1 ? '' : 's'}` : ''}` : '';
+        p ? `${labels[p] || p}${n ? ` · ${n} subtitle${n === 1 ? '' : 's'}` : ''}` : '';
       if ((player.subtitles || []).length) refreshSubtitleUI(); // server switch → reapply
       collectDubs();
     });
