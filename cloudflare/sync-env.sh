@@ -17,7 +17,7 @@ import re,sys
 for line in open(sys.argv[2]):
     m = re.match(r'^' + sys.argv[1] + r'=(.*)$', line.strip())
     if m:
-        v = m.group(2).strip().strip(chr(34)).strip(chr(39))
+        v = m.group(1).strip().strip(chr(34)).strip(chr(39))
         print(v); break
 " "$1" "$ROOT/.env.local" || true
 }
