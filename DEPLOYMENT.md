@@ -1,6 +1,24 @@
 # Deployment: Vercel + Cloudflare
 
-## Why this setup exists
+## The 30-second version (plain words)
+
+Your site plays movies. The movie video used to flow **through** Vercel's
+computers, and Vercel counts every gigabyte that passes through (10 GB free
+per month). One movie is ~2 GB, so ~5 movies used it all up.
+
+Now the video flows through **Cloudflare's** computers instead, where
+bandwidth is free and unlimited. Vercel only serves the tiny text stuff
+(search results, movie info — kilobytes, not gigabytes). Your site address
+didn't change and nothing looks different — the video just takes a cheaper
+road to reach the viewer.
+
+There are two live copies now:
+- `cinephilia-vercel.vercel.app` — the main site (Vercel for text + info,
+  Cloudflare for video).
+- `cinephile-areana.pages.dev` — a backup copy running 100% on Cloudflare
+  (free forever, no Vercel limits at all).
+
+## Why this setup exists (details)
 
 The app used to stream every video byte through Vercel (`/play` proxy in
 `src/routes/stream.js`). On Vercel Hobby that burns **Fast Origin Transfer**
@@ -124,6 +142,17 @@ curl -o /dev/null -w "%{http_code} -> %{redirect_url}\n" \
 In the browser: DevTools Network during playback — segments load from
 `flixerz-play...workers.dev`, not Vercel. Vercel usage (Fast Origin Transfer)
 goes flat except API JSON.
+
+## Troubleshooting (errors we actually hit)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `wrangler pages project list` shows nothing | No Pages project created yet | `wrangler pages project create cinephile-areana --production-branch main` |
+| Deploy prints a hashed URL (`b7b9bd0f...pages.dev`) instead of `cinephile-areana.pages.dev` | That was a preview deploy | Redeploy with `--branch main` to promote to production |
+| `/health` says a key is missing | Secrets were set but no redeploy happened after | Secrets apply to new deployments only — redeploy |
+| `sync-env.sh` prints `skip X (not in .env.local)` | That key isn't in your `.env.local` | Only the 3 main secrets are required; SubDL/OpenSubtitles are optional fallbacks |
+| Video segment returns `{"error":"Upstream 429"}` | The video CDN rate-limited a burst of requests | Normal — the player auto-switches to another server; not a bug in the proxy |
+| `*.pages.dev` won't open from one network but opens elsewhere | Local network/TLS issue, not the site | Try another network or browser; check `/health` first |
 
 ## Limits cheat sheet
 
