@@ -663,6 +663,37 @@ button { font-family: inherit; }
 }
 .player-shell video { width: 100%; height: 100%; background: #000; }
 
+/* Subtitle cue sizes (class set by player.setSubSize, persisted per user). */
+.player-shell video.cue-s::cue { font-size: 0.8em; }
+.player-shell video.cue-m::cue { font-size: 1em; }
+.player-shell video.cue-l::cue { font-size: 1.35em; }
+.player-shell video.cue-xl::cue { font-size: 1.7em; }
+
+/* Double-tap seek flash (mobile): side-anchored, fades out. */
+.seek-flash {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 10px 16px;
+  border-radius: 999px;
+  background: rgba(10, 10, 18, 0.72);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 5;
+}
+.seek-flash.left { left: 18px; }
+.seek-flash.right { right: 18px; }
+.seek-flash.show { animation: seekfade 0.7s ease forwards; }
+@keyframes seekfade {
+  0% { opacity: 0; transform: translateY(-50%) scale(0.85); }
+  15% { opacity: 1; transform: translateY(-50%) scale(1); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-50%) scale(1); }
+}
+
 /* The custom Subtitles dropdown (+ Sync widget) is the app's ONLY subtitle
    switcher. Chrome auto-shows its native CC button on <video controls> the
    moment a text track is added via addTextTrack(), which duplicates the

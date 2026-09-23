@@ -677,6 +677,7 @@
           <select class="subs-select" id="subsSelect">
             <option value="">Subtitles: Off</option>
           </select>
+          <button class="subs-select ctl-btn" id="subSizeBtn" title="Subtitle text size">CC: M</button>
           <span class="subs-sync" id="subSync" hidden>
             <button class="subs-select ctl-btn" id="subSyncMinus" title="Subtitles earlier (shortcut: z)">−</button>
             <button class="subs-select ctl-btn" id="subSyncVal" title="Subtitle sync — click to reset (shortcuts: z / x)">Sync: 0.00s</button>
@@ -816,6 +817,18 @@
       const sub = i === '' ? null : (player.subtitles || [])[parseInt(i, 10)];
       player.loadSubtitle(sub ? sub.url : '', sub ? sub.label : '');
       localStorage.setItem('cinephile-subtitle', sub ? sub.label : 'off'); // Off = remember "no subs"
+    });
+    // subtitle size cycler (S/M/L/XL), persisted by the player
+    const subSizeBtn = view.querySelector('#subSizeBtn');
+    const paintSubSize = () => {
+      subSizeBtn.textContent = `CC: ${player._subSize || 'M'}`;
+    };
+    paintSubSize();
+    subSizeBtn.addEventListener('click', () => {
+      const order = ['S', 'M', 'L', 'XL'];
+      const next = order[(order.indexOf(player._subSize || 'M') + 1) % order.length];
+      player.setSubSize(next);
+      paintSubSize();
     });
     shell.addEventListener('subtitle-error', (e) => {
       // auto-recover: the dead track is now blacklisted in the player, so

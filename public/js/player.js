@@ -24,6 +24,9 @@ const Player = (() => {
   // Override with window.__PLAY_PROXY__ (e.g. in index.html) if the URL changes.
   const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://cinephile-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
 
+  // Subtitle cue sizes (applied as video classes, see style.css ::cue rules).
+  const SUB_SIZES = ['S', 'M', 'L', 'XL'];
+
   // Fallback race budget per title load. Each failed provider is added to a
   // skip list and the remainder is re-raced — every attempt is a FRESH server,
   // so we converge on a working one (or a clear error) instead of looping.
@@ -262,6 +265,12 @@ const Player = (() => {
             break;
         }
       });
+
+      // Mobile double-tap seek: two quick taps on the left/right third jump
+      // ∓10s (chained taps accumulate); center double-tap toggles play.
+      // Native controls still own single taps. Multi-touch and swipes pass
+      // through untouched.
+      if ('ontouchstart' in window) this._initTouchSeek();
     }
 
     /**
@@ -272,6 +281,100 @@ const Player = (() => {
       this._hlsReady = Promise.resolve(hlsPromise).catch(() => {});
     }
 
+    _initTouchSeek() {
+      let lastTap = 0;
+      let lastX = 0;
+      let chain = 0;
+      let chainDir = 0;
+      let chainTimer = 0;
+      let wasPlaying = false;
+      let startX = 0;
+      let startY = 0;
+      let moved = false;
+      this.video.addEventListener(
+        'touchstart',
+        (e) => {
+          if (e.touches.length > 1) {
+            moved = true;
+            return;
+          }
+          const t = e.touches[0];
+          startX = t.clientX;
+          startY = t.clientY;
+          moved = false;
+        },
+        { passive: true }
+      );
+      this.video.addEventListener(
+        'touchmove',
+        (e) => {
+          const t = e.touches[0];
+          if (Math.abs(t.clientX - startX) + Math.abs(t.clientY - startY) > 30) moved = true;
+        },
+        { passive: true }
+      );
+      this.video.addEventListener('touchend', (e) => {
+        if (moved) return;
+        const now = Date.now();
+        const touch = (e.changedTouches && e.changedTouches[0]) || {};
+        const rect = this.video.getBoundingClientRect();
+        const x = touch.clientX || 0;
+        const third = rect.width ? (x - rect.left) / rect.width : 0.5;
+        if (now - lastTap < 300 && Math.abs(x - lastX) < 80) {
+          e.preventDefault();
+          const dir = third < 0.35 ? -1 : third > 0.65 ? 1 : 0;
+          if (!dir) {
+            this.togglePlay();
+          } else {
+            const d = this.video.duration || Infinity;
+            this.video.currentTime = Math.min(d, Math.max(0, this.video.currentTime + dir * 10));
+            chain = chainDir === dir ? chain + 1 : 1;
+            chainDir = dir;
+            clearTimeout(chainTimer);
+            chainTimer = setTimeout(() => (chain = 0), 800);
+            this._flashSeek(dir, chain);
+            // the two taps toggled native play state — restore what it was
+            setTimeout(() => {
+              if (wasPlaying && this.video.paused) this.video.play().catch(() => {});
+            }, 350);
+          }
+          lastTap = 0;
+        } else {
+          wasPlaying = !this.video.paused;
+          lastTap = now;
+          lastX = x;
+        }
+      });
+    }
+
+    _flashSeek(dir, chain) {
+      let el = this.shell.querySelector('.seek-flash');
+      if (!el) {
+        el = document.createElement('div');
+        el.className = 'seek-flash';
+        el.setAttribute('aria-hidden', 'true');
+        this.shell.appendChild(el);
+      }
+      el.textContent = `${dir < 0 ? '−' : '+'}${10 * chain}s`;
+      el.classList.toggle('left', dir < 0);
+      el.classList.toggle('right', dir > 0);
+      el.classList.remove('show');
+      void el.offsetWidth; // restart the fade animation
+      el.classList.add('show');
+    }
+
+    /** Subtitle cue size (S/M/L/XL), persisted across titles. */
+    setSubSize(size) {
+      const s = SUB_SIZES.includes(size) ? size : 'M';
+      this._subSize = s;
+      this.video.classList.remove('cue-s', 'cue-m', 'cue-l', 'cue-xl');
+      this.video.classList.add('cue-' + s.toLowerCase());
+      try {
+        localStorage.setItem('cinephile-subsize', s);
+      } catch {}
+      return s;
+    }
+
     load({ mediaId, episodeId = '1-1', title, server = null, image = '' }) {
       this.mediaId = mediaId;
       this.episodeId = episodeId;
@@ -280,6 +383,11 @@ const Player = (() => {
       this._image = image;
       this.quality = localStorage.getItem('cinephile-quality') || 'auto';
       this.audio = localStorage.getItem('cinephile-audio') || 'auto';
+      try {
+        this.setSubSize(localStorage.getItem('cinephile-subsize') || 'M');
+      } catch {
+        this.setSubSize('M');
+      }
       this._racedProviders = new Set(); // servers already raced & failed — skipped on re-race
       this._raceAttempts = 0; // bounded fallback budget per title (no infinite re-racing)
       this._intro = null;
