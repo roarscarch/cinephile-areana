@@ -55,6 +55,32 @@ providers, deployment, encryption internals, etc.), everything lives in
 
 ---
 
+## Deploy your own (free)
+
+**Vercel (site + API):** connect this repo (Settings → Git) so pushes
+auto-deploy, then set env vars (Settings → Environment Variables →
+Production): `TMDB_API_KEY`, `PEACHIFY_KEY_HEX`, `VIDNEST_ALPHABET`,
+`PLAY_PROXY_BASE`, `PLAY_SIGNING_KEY` — then redeploy once.
+
+**Cloudflare (video proxy + full mirror):** create an API token, then from
+your terminal:
+
+```bash
+cd worker
+export CLOUDFLARE_API_TOKEN=<token> CLOUDFLARE_ACCOUNT_ID=<account-id>
+npx wrangler deploy                  # video proxy
+npx wrangler deploy -c wrangler.api.toml  # api front
+cd .. && ./cloudflare/sync-env.sh cinephile-areana   # secrets from .env.local
+npx wrangler pages deploy public --project-name=cinephile-areana --branch main
+```
+
+Token: Cloudflare Dashboard → My Profile → API Tokens → **Edit Cloudflare
+Workers** template (scope to your account, revoke after). Account ID: right
+sidebar of the dashboard. Full walkthrough with screenshots-in-words, what
+each token/secret is for, and verify steps: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+
+---
+
 <div align="center">
 
 *Made for movie lovers, by movie lovers.*

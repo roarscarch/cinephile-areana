@@ -142,30 +142,50 @@ responses with `X-Sig-Status: ok|missing|expired|bad-sig`):
 Extra origins for `/sign` via `ALLOW_ORIGINS="a.com,b.com"` (defaults cover
 both Vercel projects + Pages + localhost).
 
-## Cloudflare token permissions
+## Tokens: what they are, where to get them, where they go
 
-Create at Dashboard -> My Profile -> API Tokens -> **Edit Cloudflare Workers**
-template, then scope it:
+There are exactly two credentials in this whole setup. Nothing else.
 
-- **Account Resources -> Include -> your account.** This is what actually
-  limits the token. Don't leave it on All.
-- **Zone Resources -> Include -> All zones.** `workers.dev`/`pages.dev`
-  deploys use no zone; the form just won't submit without it. Grants nothing
-  extra beyond routes.
-- **Permissions -> leave all defaults.** Wrangler needs Workers Scripts:Edit
-  to deploy, plus Account Settings / User Details / Memberships to auth.
-  Unchecking causes `10000 auth failed`. KV/R2/Pages/Routes/Tail entries are
-  harmless (this project uses Scripts + Pages).
-- **Client IP filtering -> blank** (unless you have a static IP).
-- **TTL -> blank**, then **revoke the token after deploying** (API Tokens ->
-  Delete). Never commit it — it stays in env vars only.
+| # | Credential | Get it at | Used for | Lives in |
+|---|---|---|---|---|
+| 1 | Cloudflare **API token** | Dashboard → My Profile (avatar, top-right) → **API Tokens** → Create Token → **Edit Cloudflare Workers** template → Create Token → copy the string (shown **once**) | Lets `wrangler` deploy Workers/Pages/secrets as you | Your terminal env only (`export CLOUDFLARE_API_TOKEN=...`), never in code/git |
+| 2 | Cloudflare **Account ID** | Dashboard home → right sidebar → **Account ID** (32 hex chars) → copy | Tells `wrangler` which account to deploy into | Same export (`CLOUDFLARE_ACCOUNT_ID=...`) |
+
+Vercel needs **no token**: `npx vercel login` in your terminal (browser click),
+or connect the repo once (Project → Settings → Git) and pushes deploy
+themselves. Vercel secrets are set in Project → Settings → Environment
+Variables → Production.
+
+Step-by-step token creation (2 minutes):
+
+1. Log in at dash.cloudflare.com.
+2. Click your avatar (top-right) → **My Profile** → **API Tokens** (left tab).
+3. **Create Token** → find the **Edit Cloudflare Workers** template → **Use template**.
+4. **Account Resources** → change to **Include** → pick your account in the
+   dropdown. (This is the real scoping — don't leave it on All.)
+5. **Zone Resources** → **Include** → **All zones**. (The form won't submit
+   without it; `workers.dev`/`pages.dev` deploys use no zone, so this grants
+   nothing extra.)
+6. **Permissions** → change nothing. (Wrangler needs Scripts:Edit to deploy
+   plus Settings/User/Memberships reads to log in. Unchecking anything is the
+   #1 cause of `10000 auth failed`.)
+7. **Client IP filtering** → leave blank. **TTL** → leave blank.
+8. **Continue to summary → Create Token** → copy it now (it never shows again).
+9. After deploying: back to **API Tokens** → **Delete** (revoke). Make a fresh
+   one next time you deploy.
+
+The app secrets (`TMDB_API_KEY`, `PEACHIFY_KEY_HEX`, `VIDNEST_ALPHABET`,
+`PLAY_SIGNING_KEY`) are different from the token: they come from your own
+`.env.local` / the service owners (see table below) and are uploaded with
+`sync-env.sh` (Pages) or `wrangler secret put` (Workers) or the Vercel
+dashboard — also never in git (`.env*` is gitignored).
 
 ## Vercel side
 
 No token needed: `npx vercel login` (or existing CLI auth) + linked project,
-or connect the GitHub repo (Settings -> Git) so pushes auto-deploy. Set
+or connect the GitHub repo (Settings → Git) so pushes auto-deploy. Set
 `PLAY_PROXY_BASE=https://cinephile-play.<you>.workers.dev` in Project Settings
--> Environment Variables (Production), then redeploy once.
+→ Environment Variables (Production), then redeploy once.
 
 ## Verify
 
