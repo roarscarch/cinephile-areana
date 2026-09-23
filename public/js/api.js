@@ -58,13 +58,16 @@ const API = (() => {
     } catch {}
   }
 
-  async function get(path) {
+  async function get(path, opts = {}) {
+    const signal = opts.signal;
     let lastErr = null;
     for (const base of bases()) {
+      if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
       let res;
       try {
-        res = await fetch(base + path);
+        res = await fetch(base + path, signal ? { signal } : {});
       } catch (e) {
+        if (signal && signal.aborted) throw e; // typed-ahead — never fail over
         lastErr = e; // network down / backend dead -> try next mirror
         continue;
       }

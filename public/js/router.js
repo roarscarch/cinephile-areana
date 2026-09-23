@@ -12,7 +12,7 @@
   const SHARE_ORIGIN = 'https://cinephilia-vercel.vercel.app';
   // Markup helpers live in render.js — shared with the server's SSR pass so
   // pre-rendered HTML and client-rendered HTML can never drift apart.
-  const { card, grid, skeletonRow, rowWithArrows, escapeHtml, homeView } = Render;
+  const { card, grid, skeletonRow, rowWithArrows, escapeHtml, homeView, TYPE_LABEL } = Render;
 
   // ---------------- helpers ----------------
   function el(html) {
@@ -206,8 +206,7 @@
       searchDropdown.innerHTML = '<div class="sd-loading">Searching…</div>';
       const ac = (searchAbort = new AbortController());
       try {
-        const res = await fetch(`/search?query=${encodeURIComponent(q)}`, { signal: ac.signal });
-        const data = await res.json();
+        const data = await API.get(`/search?query=${encodeURIComponent(q)}`, { signal: ac.signal });
         if (ac.signal.aborted) return;
         const items = (data.results || []).slice(0, 6);
         if (!items.length) {
