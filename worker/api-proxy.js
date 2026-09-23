@@ -17,10 +17,20 @@
 // Quota: ~10-15 requests per watch -> ~7k watches/day on the free 100k/day
 // pool (shared account-wide with the play Worker).
 
-const BACKENDS = [
+const DEFAULT_BACKENDS = [
   'https://cinephile-areana.pages.dev',
   'https://cinephilia-vercel.vercel.app',
 ];
+// Overridable without a code change: set BACKENDS="https://a,https://b"
+// as Worker vars (wrangler.api.toml [vars] or dashboard). Public URLs, not
+// secrets — the default below just saves the step.
+function backends(env) {
+  const raw = String((env && env.BACKENDS) || '')
+    .split(',')
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter((s) => /^https?:\/\//i.test(s));
+  return raw.length ? raw : DEFAULT_BACKENDS;
+}
 const REFUSE = new Set(['play', 'download', 'sign']);
 const UPSTREAM_TIMEOUT_MS = 12000;
 
@@ -41,7 +51,7 @@ async function fetchWithTimeout(url, ms) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
@@ -54,7 +64,7 @@ export default {
       });
     }
     if (url.pathname === '/' || url.pathname === '/health') {
-      return new Response(JSON.stringify({ ok: true, proxy: 'cinephile-api', backends: BACKENDS }), {
+      return new Response(JSON.stringify({ ok: true, proxy: 'cinephile-api', backends: backends(env) }), {
         headers: { 'Content-Type': 'application/json', ...cors() },
       });
     }
@@ -76,6 +86,7 @@ export default {
       });
     }
 
+    const BACKENDS = backends(env);
     const order = [lastGood, ...BACKENDS.map((_, i) => i).filter((i) => i !== lastGood)];
     let lastErr = null;
     for (const i of order) {

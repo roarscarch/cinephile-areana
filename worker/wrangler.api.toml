@@ -4,3 +4,7 @@ name = "cinephile-api"
 main = "api-proxy.js"
 compatibility_date = "2026-09-01"
 workers_dev = true
+
+# Backend pool (public URLs — vars, not secrets). Edit + redeploy to change.
+[vars]
+BACKENDS = "https://cinephile-areana.pages.dev,https://cinephilia-vercel.vercel.app"
