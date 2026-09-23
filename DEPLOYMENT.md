@@ -39,7 +39,7 @@ origin). Nothing about the Vercel URL or UX changed.
 ```
 Browser (stays on https://cinephilia-vercel.vercel.app)
  ├─> Vercel: HTML + /search + /info + /sources + /subtitles + /dubs (KBs)
- ├─> Cloudflare Worker flixerz-play (/play?...): video bytes (GBs, free)
+ ├─> Cloudflare Worker cinephile-play (/play?...): video bytes (GBs, free)
  │     ├─> CORS-open CDN ─> direct (eat-peach.sbs, 97bf1.com, …)
  │     └─> Referer-gated CDN ─> Worker injects Referer, rewrites m3u8
  └─> Vercel /play: 302-redirects to the Worker (guard for stale cached
@@ -50,14 +50,14 @@ Plus a full Cloudflare mirror (no Vercel involved at all):
 
 ```
 https://cinephile-areana.pages.dev  (Pages static + Functions API)
-  └─> /play 302 ─> flixerz-play Worker
+  └─> /play 302 ─> cinephile-play Worker
   └─> /download 302 ─> Vercel (needs ffmpeg, can't run on Workers)
 ```
 
 | Piece | Code | Host | Cost |
 |---|---|---|---|
 | UI + metadata API | repo as-is | Vercel | ~15 KB origin/watch |
-| Stream proxy | `worker/play-proxy.js` | Workers (`flixerz-play`) | free bandwidth, 100k req/day (~125 proxied movies/day; direct plays unlimited) |
+| Stream proxy | `worker/play-proxy.js` | Workers (`cinephile-play`) | free bandwidth, 100k req/day (~125 proxied movies/day; direct plays unlimited) |
 | Full mirror | `public/` + `functions/` | Pages (`cinephile-areana`) | free, unlimited bandwidth |
 
 ## Deploy the Worker (video proxy)
@@ -67,14 +67,23 @@ cd worker
 export CLOUDFLARE_API_TOKEN=<token>     # "Edit Cloudflare Workers" template
 export CLOUDFLARE_ACCOUNT_ID=<account-id> # dashboard right sidebar
 npx wrangler whoami   # sanity check
-npx wrangler deploy   # -> https://flixerz-play.<you>.workers.dev
+npx wrangler deploy   # play proxy -> https://cinephile-play.<you>.workers.dev
+npx wrangler deploy -c wrangler.api.toml  # api proxy -> https://cinephile-api.<you>.workers.dev
 unset CLOUDFLARE_API_TOKEN
 ```
+
+The api proxy (`worker/api-proxy.js`, `cinephile-api`) is the single-URL
+front for the metadata API: it forwards to the healthy backend
+(Pages mirror / Vercel) so backend hostnames stay out of DevTools. It never
+proxies `/play` (video goes direct), `/sign` (same-origin lockdown), or
+`/download` (page-origin flow). If it fails, `api.js` falls back to the
+backends directly. Quota: ~10-15 req/watch -> ~7k watches/day of the free
+100k/day pool (shared account-wide with the play Worker).
 
 ## Deploy the Pages mirror (full site, optional)
 
 ```bash
-cd ~/myflixerz   # repo root (needs public/ + functions/ together)
+cd ~/cinephile-areana   # repo root (needs public/ + functions/ together)
 npx wrangler pages project create cinephile-areana --production-branch main
 ./cloudflare/sync-env.sh cinephile-areana   # copies 3 secrets, nothing else
 npx wrangler pages deploy public --project-name=cinephile-areana --branch main
@@ -155,7 +164,7 @@ template, then scope it:
 
 No token needed: `npx vercel login` (or existing CLI auth) + linked project,
 or connect the GitHub repo (Settings -> Git) so pushes auto-deploy. Set
-`PLAY_PROXY_BASE=https://flixerz-play.<you>.workers.dev` in Project Settings
+`PLAY_PROXY_BASE=https://cinephile-play.<you>.workers.dev` in Project Settings
 -> Environment Variables (Production), then redeploy once.
 
 ## Verify
@@ -166,11 +175,11 @@ curl "https://<your-vercel>.vercel.app/" | grep player.js  # expect ?v=19+
 # /play must 302, never proxy bytes:
 curl -o /dev/null -w "%{http_code} -> %{redirect_url}\n" \
   "https://<your-vercel>.vercel.app/play?url=https%3A%2F%2Fexample.com%2Fa.m3u8&ref=https%3A%2F%2Fpeachify.top%2F"
-# expect: 302 -> https://flixerz-play.<you>.workers.dev/play?...
+# expect: 302 -> https://cinephile-play.<you>.workers.dev/play?...
 ```
 
 In the browser: DevTools Network during playback — segments load from
-`flixerz-play...workers.dev`, not Vercel. Vercel usage (Fast Origin Transfer)
+`cinephile-play...workers.dev`, not Vercel. Vercel usage (Fast Origin Transfer)
 goes flat except API JSON.
 
 ## Troubleshooting (errors we actually hit)

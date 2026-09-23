@@ -72,7 +72,7 @@ const VIDNEST_PROVIDERS = [
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
-const PLAY_PROXY_DEFAULT = 'https://flixerz-play.cinephilia-areana.workers.dev';
+const PLAY_PROXY_DEFAULT = 'https://cinephile-play.cinephilia-areana.workers.dev';
 const PLAY_SIG_TTL_S = 2 * 3600; // signed play URLs live 2h (tokenized CDNs expire faster anyway)
 
 // Sign a proxy URL so the Worker can tell our players apart from hotlinkers.

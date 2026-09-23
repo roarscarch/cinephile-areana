@@ -19,7 +19,7 @@ const Player = (() => {
 
   // Option A: video bytes ride the Cloudflare Worker, not Vercel.
   // Override with window.__PLAY_PROXY__ (e.g. in index.html) if the URL changes.
-  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://flixerz-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
+  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://cinephile-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
 
   // Fallback race budget per title load. Each failed provider is added to a
   // skip list and the remainder is re-raced — every attempt is a FRESH server,
@@ -135,7 +135,7 @@ const Player = (() => {
   }
 
   // ---- main player ----
-  const PROGRESS_KEY = 'myflixerz-progress'; // { [mediaId/episodeId]: {pos,dur,title,type,image,t} }
+  const PROGRESS_KEY = 'cinephile-progress'; // { [mediaId/episodeId]: {pos,dur,title,type,image,t} }
   const RESUME_MIN = 30; // seconds before we offer a resume
   const UP_NEXT_WINDOW_S = 300; // reveal "Next episode" 5 min before the end
 
@@ -163,7 +163,7 @@ const Player = (() => {
       // once the gain graph is live we hold video.volume=1 and let a GainNode
       // own loudness (up to 2000%). A DynamicsCompressor (near-limiter) clamps
       // boosted peaks so we don't clip — that's what the ✓ boost experiment does.
-      this._volume = Math.min(20, Math.max(0.1, Number(localStorage.getItem('myflixerz-volume') || '1')));
+      this._volume = Math.min(20, Math.max(0.1, Number(localStorage.getItem('cinephile-volume') || '1')));
       this._audioGraph = null; // AudioContext
       this._audioGain = null; // GainNode (dangerously owns loudness > 1)
       this._subtitle = null; // {url,label} — feeds the Download button
@@ -275,8 +275,8 @@ const Player = (() => {
       this.server = server;
       this._title = title || '';
       this._image = image;
-      this.quality = localStorage.getItem('myflixerz-quality') || 'auto';
-      this.audio = localStorage.getItem('myflixerz-audio') || 'auto';
+      this.quality = localStorage.getItem('cinephile-quality') || 'auto';
+      this.audio = localStorage.getItem('cinephile-audio') || 'auto';
       this._racedProviders = new Set(); // servers already raced & failed — skipped on re-race
       this._raceAttempts = 0; // bounded fallback budget per title (no infinite re-racing)
       this._intro = null;
@@ -351,7 +351,7 @@ const Player = (() => {
     /** User picks an audio language (dub label) — re-attaches the matching source. */
     setAudio(value) {
       this.audio = value;
-      localStorage.setItem('myflixerz-audio', value);
+      localStorage.setItem('cinephile-audio', value);
       if (value === 'auto') return this._play();
       const src = (this.sources || []).find((s) => s.dub === value);
       if (src) {
@@ -406,7 +406,7 @@ const Player = (() => {
     /** Set volume in [0.1, 20] (10%–2000%). 1 = 100%, 2 = 200%, 4 = 400%, 20 = 2000%. */
     setVolume(v) {
       this._volume = Math.max(0.1, Math.min(20, Number(v) || 0.1));
-      localStorage.setItem('myflixerz-volume', String(this._volume));
+      localStorage.setItem('cinephile-volume', String(this._volume));
       if (this._audioGain) {
         this.video.volume = 1;
         this._audioGain.gain.value = this._volume;
@@ -628,7 +628,7 @@ const Player = (() => {
     /** User picks a quality: 'auto' (ABR) or a height like 1080. Persisted. */
     setQuality(value) {
       this.quality = value;
-      localStorage.setItem('myflixerz-quality', value);
+      localStorage.setItem('cinephile-quality', value);
       if (this.hls) {
         if (value === 'auto') {
           this.hls.currentLevel = -1;
@@ -842,7 +842,7 @@ const Player = (() => {
       // skip tracks that already failed to load this session — never re-pick one
       const subs = (this.subtitles || []).filter((s) => !(this._failedSubs && this._failedSubs.has(s.url)));
       if (!subs.length) return null;
-      const pref = localStorage.getItem('myflixerz-subtitle') || '';
+      const pref = localStorage.getItem('cinephile-subtitle') || '';
       if (pref === 'off') return null;
       const kept = pref ? subs.find((s) => s.label === pref) : null;
       if (kept) return kept;

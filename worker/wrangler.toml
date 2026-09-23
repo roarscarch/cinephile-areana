@@ -1,7 +1,8 @@
 # wrangler.toml — Cloudflare Workers config for the /play stream proxy
+# Deploy: npx wrangler deploy   (run inside worker/)
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
 
-name = "flixerz-play"
+name = "cinephile-play"
 main = "play-proxy.js"
 compatibility_date = "2026-09-01"
 

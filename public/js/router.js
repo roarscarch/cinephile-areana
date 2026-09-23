@@ -1,4 +1,4 @@
-// MyFlixz frontend: hash router, search, views.
+// Cinephile frontend: hash router, search, views.
 (() => {
   const view = document.getElementById('view');
   const toast = document.getElementById('toast');
@@ -59,7 +59,7 @@
 
   function continueWatchingItems() {
     try {
-      const map = JSON.parse(localStorage.getItem('myflixerz-progress') || '{}');
+      const map = JSON.parse(localStorage.getItem('cinephile-progress') || '{}');
       // One card per SERIES/movie: TV progress is keyed per mediaId (`tv/1396`)
       // with the latest episodeId inside, so a show never fans out into
       // E1/E2/E3… cards. Legacy per-episode keys (`tv/1396/1-1`) are merged in
@@ -706,8 +706,8 @@
       const autoIdx = auto ? subs.indexOf(auto) : -1;
       subsSelect.value = autoIdx >= 0 ? String(autoIdx) : '';
       player.loadSubtitle(auto ? auto.url : '', auto ? auto.label : '');
-      if (auto && !localStorage.getItem('myflixerz-subtitle')) {
-        localStorage.setItem('myflixerz-subtitle', auto.label); // remember across views
+      if (auto && !localStorage.getItem('cinephile-subtitle')) {
+        localStorage.setItem('cinephile-subtitle', auto.label); // remember across views
       }
     }
     shell.addEventListener('subtitles-ready', () => refreshSubtitleUI());
@@ -729,7 +729,7 @@
       const i = subsSelect.value;
       const sub = i === '' ? null : (player.subtitles || [])[parseInt(i, 10)];
       player.loadSubtitle(sub ? sub.url : '', sub ? sub.label : '');
-      localStorage.setItem('myflixerz-subtitle', sub ? sub.label : 'off'); // Off = remember "no subs"
+      localStorage.setItem('cinephile-subtitle', sub ? sub.label : 'off'); // Off = remember "no subs"
     });
     shell.addEventListener('subtitle-error', (e) => {
       // auto-recover: the dead track is now blacklisted in the player, so
@@ -741,8 +741,8 @@
     // ---- subtitle sync widget: per title+episode timing offset. ±0.5s buttons
     // here, ±0.1s fine-tune via z/x keys, click the value to reset. Offset is
     // re-applied instantly from the stashed raw cues (no refetch) and persisted
-    // under 'myflixerz-subsync'. The player also auto-corrects fps mismatches.
-    const SUB_SYNC_KEY = 'myflixerz-subsync';
+    // under 'cinephile-subsync'. The player also auto-corrects fps mismatches.
+    const SUB_SYNC_KEY = 'cinephile-subsync';
     const syncBox = view.querySelector('#subSync');
     const syncVal = view.querySelector('#subSyncVal');
     const syncKey = `${mediaId}/${episodeId}`;

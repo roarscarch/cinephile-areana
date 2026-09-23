@@ -58,7 +58,7 @@ flowchart LR
         proxy["/play stream proxy<br/>Referer + Range passthrough<br/>m3u8 URL rewriting"]
     end
 
-    subgraph Biz["Business layer (flixhq.js)"]
+    subgraph Biz["Business layer (extractor.js)"]
         tmdb["TMDB listing / info methods"]
         sources["fetchEpisodeSources"]
         dubs["fetchDubs<br/>(audio languages)"]
@@ -109,7 +109,7 @@ sequenceDiagram
     participant U as User
     participant B as Browser (player.js)
     participant S as Express (server.js)
-    participant F as FlixHQ (flixhq.js)
+    participant F as CinephileHQ (extractor.js)
     participant X as extractor.js
     participant P as x.eat-peach.sbs
     participant V as new.vidnest.fun
@@ -153,7 +153,7 @@ sequenceDiagram
 | File | Role |
 |---|---|
 | `server.js` | Express: static, rate limiter, all API routes, `/play` proxy, SPA fallback |
-| `flixhq.js` | `FlixHQ` class: TMDB metadata + listings, `fetchEpisodeSources`, `fetchDubs`, embeds |
+| `extractor.js` | `CinephileHQ` class: TMDB metadata + listings, `fetchEpisodeSources`, `fetchDubs`, embeds |
 | `extractor.js` | **The crack layer**: Peachify + Vidnest decoders, subtitle fetchers, `resolveStream` dispatch, caching |
 | `models.js` | `TvType` enum |
 | `public/index.html` | SPA shell — plus the pre-paint `no-ssr` guard that stops deep links from flashing the server-rendered home view |
@@ -168,7 +168,7 @@ sequenceDiagram
 ## 4. Running locally
 
 ```bash
-cd myflixerz
+cd cinephile-areana
 npm install
 npm start        # or: node server.js
 # → http://localhost:3000
@@ -183,7 +183,7 @@ cp .env.example .env.local
 ```
 
 Optional overrides: `PORT` (default `3000`). `TMDB_API_KEY` falls back to the
-public read-only key embedded in `flixhq.js` if unset.
+public read-only key embedded in `extractor.js` if unset.
 
 Requires **ffmpeg on PATH** for HLS downloads (the Download button remuxes
 HLS → mp4). Direct `.mp4` sources download without it. Ubuntu:
@@ -383,10 +383,10 @@ new hosts default to the proxy, which is the safe choice.
 |---|---|
 | Server buttons | `GET /servers/...` lists the 11 names; "Auto" (default) lets the backend pick. Clicking a server reloads sources for it only, and that pick is **sticky**: if it has no sources the player says `No sources on <Server> — pick another server.` and STAYS there (highlight keeps the chosen server) instead of silently racing off to a different one. |
 | Auto-fallback | First load and every failure race ALL healthy servers in parallel server-side (`resolveStream` auto mode) and play whichever answers first with sources. A failing/empty server never surfaces an error — the player silently re-races (`Server X failed — playing the fastest available…`); a real error is shown only when every server is dead. Server buttons auto-highlight the provider that actually won. |
-| Quality | hls.js levels (`hls.levels` / `hls.currentLevel` by height). Stored as **`myflixerz-quality`** in localStorage (`'auto'` = ABR, or an explicit height). Non-HLS (MP4) sources re-attach with the chosen source. |
-| Audio (dub) | Dropdown is always visible. `collectDubs()` reads the current server's `dub` values, then probes `GET /dubs` once (which checks iron + multi) and merges. Picking a language the current server lacks **auto-switches the server button** to the one that has it. Stored as **`myflixerz-audio`**. |
+| Quality | hls.js levels (`hls.levels` / `hls.currentLevel` by height). Stored as **`cinephile-areana-quality`** in localStorage (`'auto'` = ABR, or an explicit height). Non-HLS (MP4) sources re-attach with the chosen source. |
+| Audio (dub) | Dropdown is always visible. `collectDubs()` reads the current server's `dub` values, then probes `GET /dubs` once (which checks iron + multi) and merges. Picking a language the current server lacks **auto-switches the server button** to the one that has it. Stored as **`cinephile-areana-audio`**. |
 | Subtitles | Merged from both subtitle APIs, deduped by label, populated on demand from the sources payload. VTT/SRT both parse. |
-| Resume + Continue Watching | Position saved to **`myflixerz-progress`** (per `mediaId/episodeId`, throttled to 5s, removed when the title ends). On reload the player seeks back automatically ("Resumed from 1:30" toast); the home page shows a "⏯️ Continue Watching" row with per-title progress bars, jumping straight into the right episode. |
+| Resume + Continue Watching | Position saved to **`cinephile-areana-progress`** (per `mediaId/episodeId`, throttled to 5s, removed when the title ends). On reload the player seeks back automatically ("Resumed from 1:30" toast); the home page shows a "⏯️ Continue Watching" row with per-title progress bars, jumping straight into the right episode. |
 | Keyboard shortcuts | `space`/`k` play-pause · `→`/`l` +10s · `←`/`j` −10s · `↑`/`↓` volume · `m` mute · `f` fullscreen · `>`/`.` speed up · `<`/`,` speed down · `z`/`x` subtitle −/+0.1s (ignored while typing). |
 | Speed + PiP | Toolbar buttons: speed cycles 0.25× increments (clamped 0.25–2×), PiP button hidden when unsupported. |
 | First paint | Google Fonts load **async** (never block first paint); hls.js (~400 KB) lazy-loaded only on watch pages + self-hosted at `/vendor/hls.min.js` (no CDN); the hls.js download and the `API.sources()` stream race run **in parallel** (`player.readyWhen(loadHls())`); **every provider's stream is startability-verified server-side** before the race crowns a winner — a fast API whose CDN 4xxs at play time (e.g. goodstream) never wins, so the player gets a source that actually starts (no dead-source cascade); `/play` caches rewritten playlists (5 min) so repeat loads kick off in **milliseconds**. |
@@ -440,7 +440,7 @@ Follow this order and it works first time:
 6. **Wire it up (4 places):**
    - `extractor.js`: add name to `VIDNEST_PROVIDERS` (or `PROVIDERS`) and a
      branch in `resolveStream` dispatch.
-   - `flixhq.js`: `SERVERS` is built from those arrays automatically.
+   - `extractor.js`: `SERVERS` is built from those arrays automatically.
    - `app.js`: add a friendly label to `PROVIDER_LABELS`.
    - `player.js`: add the name to `SERVER_FALLBACK_ORDER` (before peachify
      names if it's more reliable).
@@ -514,9 +514,9 @@ Three options, same code:
 
 - **Docker (recommended):** `docker compose up -d --build` → port 3000.
   `Dockerfile` uses `node:20-alpine` + `npm ci --omit=dev`; Environment variables overridable via `.env` or container env; `restart: unless-stopped`; probe `GET /health`.
-- **systemd:** `deploy/myflixerz.service` — adjust `WorkingDirectory` and
+- **systemd:** `deploy/cinephile-areana.service` — adjust `WorkingDirectory` and
   `ExecStart`, install under `/etc/systemd/system/`, then
-  `systemctl enable --now myflixerz`.
+  `systemctl enable --now cinephile-areana`.
 - **Vercel:** `vercel.json` builds the whole app as a single `@vercel/node`
   function from `server.js`. Environment variables (`TMDB_API_KEY` and deploy
     credentials) must be configured in the Vercel dashboard or via `vercel env`

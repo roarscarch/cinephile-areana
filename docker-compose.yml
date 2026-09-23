@@ -1,11 +1,11 @@
 services:
-  myflixerz:
+  cinephile-areana:
     build: .
-    container_name: myflixerz
+    container_name: cinephile-areana
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - PORT=3000
-      # optional: override the public TMDB key baked into flixhq.js
+      # optional: override the public TMDB key baked into extractor.js
       - TMDB_API_KEY=${TMDB_API_KEY:-}

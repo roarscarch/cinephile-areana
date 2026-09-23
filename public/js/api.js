@@ -1,4 +1,4 @@
-// Thin client for the MyFlixz API.
+// Thin client for the Cinephile API.
 //
 // Free load balancer: every call tries same-origin first, then the mirror
 // backend. Either deployment can die and the app keeps working — no LB server
@@ -6,13 +6,40 @@
 // repeat calls reuse warm caches instead of flapping. (/sign stays
 // same-origin by design — see player.js.)
 const API = (() => {
+  // One-time store rename (myflixerz-* -> cinephile-*): keeps resume
+  // positions, volume, and prefs across the rebrand.
+  try {
+    const pairs = [
+      ['myflixerz-progress', 'cinephile-progress'],
+      ['myflixerz-volume', 'cinephile-volume'],
+      ['myflixerz-quality', 'cinephile-quality'],
+      ['myflixerz-audio', 'cinephile-audio'],
+      ['myflixerz-subtitle', 'cinephile-subtitle'],
+      ['myflixerz-subsync', 'cinephile-subsync'],
+      ['myflixerz-api-base', 'cinephile-api-base'],
+    ];
+    for (const [o, n] of pairs) {
+      if (localStorage.getItem(n) === null) {
+        const v = localStorage.getItem(o);
+        if (v !== null) {
+          try {
+            localStorage.setItem(n, v);
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  // Single-URL front (hides backend hostnames in normal operation); direct
+  // mirrors are the fallback if the proxy itself ever fails.
+  const API_PROXY = 'https://cinephile-api.cinephilia-areana.workers.dev';
   const MIRRORS = ['https://cinephilia-vercel.vercel.app', 'https://cinephile-areana.pages.dev'];
-  const PIN_KEY = 'myflixerz-api-base';
+  const PIN_KEY = 'cinephile-api-base';
   const PIN_TTL = 24 * 60 * 60 * 1000;
 
   function bases() {
     const same = (typeof location !== 'undefined' && location.origin) || '';
-    const list = [same, ...MIRRORS.filter((m) => m !== same)];
+    const direct = [same, ...MIRRORS.filter((m) => m !== same)].filter(Boolean);
+    const list = [API_PROXY, ...direct.filter((b) => b !== API_PROXY)];
     let pinned = '';
     try {
       const raw = localStorage.getItem(PIN_KEY);

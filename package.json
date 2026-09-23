@@ -1,5 +1,5 @@
 {
-  "name": "myflixhq-api",
+  "name": "cinephile-areana",
   "version": "1.0.0",
   "description": "Self-hosted streaming frontend: TMDB metadata + decrypted Peachify/Vidnest embed APIs, served through a local Express server",
   "main": "server.js",

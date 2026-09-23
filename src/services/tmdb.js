@@ -32,9 +32,9 @@ function withDeadline(promise, ms) {
 const SUB_VALID_CACHE = new Map(); // url -> { ok: boolean, ts: number }
 const SUB_VALID_TTL = 10 * 60 * 1000;
 
-class FlixHQ {
+class CinephileHQ {
   constructor() {
-    this.name = 'MyFlixHQ';
+    this.name = 'CinephileHQ';
     this.baseUrl = 'https://myflixerfree.to';
     this.tmdb = axios.create({
       baseURL: TMDB_BASE,
@@ -508,4 +508,4 @@ class FlixHQ {
   }
 }
 
-module.exports = FlixHQ;
+module.exports = CinephileHQ;

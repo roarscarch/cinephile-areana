@@ -79,7 +79,7 @@ function looksLikePlaylistBytes(buf) {
 }
 
 // Rewrite every media URL in a playlist to ride this Worker.
-// workerOrigin = e.g. https://flixerz-play.xxx.workers.dev
+// workerOrigin = e.g. https://cinephile-play.xxx.workers.dev
 // auth = { exp, sig } inherited from the parent request so child segment
 // fetches pass signature enforcement too (same 2h window).
 function rewritePlaylist(text, playlistUrl, referer, origin, workerOrigin, auth = null) {
@@ -132,7 +132,7 @@ export default {
 
     // Health check
     if (url.pathname === '/' || url.pathname === '/health') {
-      return new Response(JSON.stringify({ ok: true, proxy: 'flixerz-play' }), {
+      return new Response(JSON.stringify({ ok: true, proxy: 'cinephile-play' }), {
         headers: { 'Content-Type': 'application/json', ...corsHeaders() },
       });
     }

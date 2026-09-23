@@ -1,4 +1,4 @@
-// functions/lib/flix.js — FlixHQ (TMDB + orchestration) ported to Workers runtime.
+// functions/lib/flix.js — CinephileHQ (TMDB + orchestration) ported to Workers runtime.
 //
 // Same logic as src/services/tmdb.js. Adaptations:
 //   axios instance      -> tmdbGet() on native fetch
@@ -23,11 +23,11 @@ function withDeadline(promise, ms) {
 const SUB_VALID_CACHE = new Map();
 const SUB_VALID_TTL = 10 * 60 * 1000;
 
-export class FlixHQ {
+export class CinephileHQ {
   constructor(env) {
     if (!env.TMDB_API_KEY) throw new Error('TMDB_API_KEY env required');
     this.env = env;
-    this.name = 'MyFlixHQ';
+    this.name = 'CinephileHQ';
     this.baseUrl = 'https://myflixerfree.to';
     this._genresCache = null;
     this._cache = new Map();

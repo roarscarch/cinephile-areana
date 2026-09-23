@@ -71,12 +71,12 @@ vidcore (API 500 on every input, bot-gated), vidfast (same), vidsrc-embed.ru
   shell wrapper itself, kills the session). If started with an absolute path
   (`node /path/to/server.js`) the pattern won't match — check `ss -tlnp` and
   kill by pid.
-- localStorage keys: `myflixerz-quality` (height or 'auto'), `myflixerz-audio`
-  (dub label or 'auto'), `myflixerz-progress` (per-title resume map — keyed
+- localStorage keys: `cinephile-areana-quality` (height or 'auto'), `cinephile-areana-audio`
+  (dub label or 'auto'), `cinephile-areana-progress` (per-title resume map — keyed
   `mediaId/episodeId`; powers resume + Continue Watching row),
-  `myflixerz-volume` (0.1–20, i.e. 10%–2000% boost — read by Web Audio gain node
-  in player.js), `myflixerz-subtitle` (auto-shown subtitle label, or 'off'),
-  `myflixerz-subsync` ({mediaId/episodeId: seconds} — subtitle timing offsets,
+  `cinephile-areana-volume` (0.1–20, i.e. 10%–2000% boost — read by Web Audio gain node
+  in player.js), `cinephile-areana-subtitle` (auto-shown subtitle label, or 'off'),
+  `cinephile-areana-subsync` ({mediaId/episodeId: seconds} — subtitle timing offsets,
   set via the Sync widget or z/x keys).
   The subtitle pref defaults to the first English track on a server.
 - Tests: `npm test` (node --test) — `tests/extractor.test.js` guards the
@@ -97,7 +97,7 @@ vidcore (API 500 on every input, bot-gated), vidfast (same), vidsrc-embed.ru
   breaker (`familyDeadUntil`) so outage days skip it entirely; any successful
   probe heals it. The detail page also fire-and-forget prefetches /sources +
   /subtitles so Play usually hits warm server caches.
-- Caching invariants: TTLs live in `flixhq.js._cached` (search 5 min, listings
+- Caching invariants: TTLs live in `extractor.js._cached` (search 5 min, listings
   10 min, info 15 min, dubs 10 min, sources 60 s). Sources cache must stay
   SHORT — tokenized stream URLs expire upstream. `/play` segment cache
   (`SEGMENT_CACHE` in server.js): items ≤ 4 MB, budget 25 MB, 5 min TTL;

@@ -1,0 +1,6 @@
+# wrangler.api.toml — deploy the API proxy as its own Worker:
+#   npx wrangler deploy -c wrangler.api.toml   (run inside worker/)
+name = "cinephile-api"
+main = "api-proxy.js"
+compatibility_date = "2026-09-01"
+workers_dev = true

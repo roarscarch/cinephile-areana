@@ -71,7 +71,7 @@ function b64urlToBytes(s) {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-const PLAY_PROXY_DEFAULT = 'https://flixerz-play.cinephilia-areana.workers.dev';
+const PLAY_PROXY_DEFAULT = 'https://cinephile-play.cinephilia-areana.workers.dev';
 const PLAY_SIG_TTL_S = 2 * 3600;
 
 function hexEncode(bytes) {

@@ -8,7 +8,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/anur7781/myflixerz
+WorkingDirectory=/home/anur7781/cinephile-areana
 ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=3

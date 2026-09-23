@@ -9,7 +9,7 @@
 // frontend needs ZERO changes: api.js stays same-origin, player.js already
 // points at the play Worker.
 
-import { FlixHQ } from './lib/flix.js';
+import { CinephileHQ } from './lib/flix.js';
 import { fetchSubdlVtt } from './lib/subs.js';
 import { signPlayUrl } from './lib/ex.js';
 
@@ -34,12 +34,12 @@ function signOriginAllowed(env, request) {
   }
 }
 
-const PLAY_WORKER_DEFAULT = 'https://flixerz-play.cinephilia-areana.workers.dev';
+const PLAY_WORKER_DEFAULT = 'https://cinephile-play.cinephilia-areana.workers.dev';
 const DOWNLOAD_FALLBACK_DEFAULT = 'https://cinephilia-vercel.vercel.app';
 
 let flix = null;
 function getFlix(env) {
-  if (!flix) flix = new FlixHQ(env);
+  if (!flix) flix = new CinephileHQ(env);
   return flix;
 }
 
