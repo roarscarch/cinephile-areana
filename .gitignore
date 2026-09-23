@@ -8,3 +8,4 @@ screenshots/*
 .vercel
 .env*
 !.env.example
+.wrangler/
