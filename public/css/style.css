@@ -669,6 +669,43 @@ button { font-family: inherit; }
 .player-shell video.cue-l::cue { font-size: 1.35em; }
 .player-shell video.cue-xl::cue { font-size: 1.7em; }
 
+/* Trailer modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 4, 10, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 60;
+}
+.modal-box {
+  position: relative;
+  width: min(880px, 100%);
+  background: #101018;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: rgba(10, 10, 18, 0.8);
+  color: #fff;
+  font-size: 15px;
+  cursor: pointer;
+  z-index: 2;
+}
+.modal-video { aspect-ratio: 16 / 9; }
+.modal-video iframe { width: 100%; height: 100%; display: block; }
+
 /* Double-tap seek flash (mobile): side-anchored, fades out. */
 .seek-flash {
   position: absolute;

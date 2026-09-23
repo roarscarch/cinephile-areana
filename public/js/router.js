@@ -94,6 +94,48 @@
     bindCards(wl);
   }
 
+  // ---- watch history row (everything played, newest first) ----
+  function fillHistoryRow() {
+    let items = [];
+    try {
+      const raw = JSON.parse(localStorage.getItem('cinephile-history') || '[]');
+      if (Array.isArray(raw)) items = raw;
+    } catch (e) {}
+    const hw = view.querySelector('#hwSection');
+    if (!hw) return;
+    if (!items.length) {
+      hw.hidden = true;
+      return;
+    }
+    const rel = (t) => {
+      const m = Math.floor((Date.now() - (t || 0)) / 60000);
+      if (m < 1) return 'just now';
+      if (m < 60) return `${m}m ago`;
+      const h = Math.floor(m / 60);
+      if (h < 24) return `${h}h ago`;
+      const d = Math.floor(h / 24);
+      return d === 1 ? 'yesterday' : `${d}d ago`;
+    };
+    hw.hidden = false;
+    hw.querySelector('.row-wrap').outerHTML = rowWithArrows(
+      items.slice(0, 15).map((h) => {
+        const [type, id] = String(h.id || '').split('/');
+        const ep = h.episodeId || '1-1';
+        return card({
+          id: h.id,
+          href: type === 'tv' ? `#/watch/${type}/${id}/${ep}` : `#/watch/${type}/${id}`,
+          title: h.title || 'Untitled',
+          image: h.image || '',
+          releaseDate: '',
+          type,
+          subtitle: type === 'tv' ? epLabel(ep) : rel(h.t),
+        });
+      }).join('')
+    );
+    bindRowArrows(hw);
+    bindCards(hw);
+  }
+
   // ---- continue watching (from saved watch positions) ----
   function fmtTime(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
@@ -330,6 +372,8 @@
     }
     // My List row from the watchlist (hidden when empty)
     fillWatchlistRow();
+    // History row (hidden when empty)
+    fillHistoryRow();
 
     if (ssr) {
       // Trending rows are already painted server-side — wire them up with zero
@@ -531,6 +575,7 @@
             <p class="detail-desc">${escapeHtml(info.description || 'No description available.')}</p>
             <div class="play-actions">
               <button class="btn btn-primary" id="playBtn">Watch now</button>
+              ${info.trailer ? `<button class="btn" id="trailerBtn" title="Watch trailer">Trailer</button>` : ''}
               <button class="btn" id="wlBtn" title="Save to My List">+ My List</button>
               <button class="btn" id="shareBtn" title="Copy a shareable link with preview">Share</button>
             </div>
@@ -566,6 +611,34 @@
       }
     });
 
+    // trailer modal (YouTube-nocookie embed, nothing autoplays until opened)
+    const trailerBtn = view.querySelector('#trailerBtn');
+    if (trailerBtn && info.trailer) {
+      trailerBtn.addEventListener('click', () => {
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+          <div class="modal-box" role="dialog" aria-label="Trailer">
+            <button class="modal-close" aria-label="Close">✕</button>
+            <div class="modal-video">
+              <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(info.trailer)}?autoplay=1&rel=0"
+                title="Trailer" frameborder="0" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>
+            </div>
+          </div>`;
+        const close = () => {
+          document.removeEventListener('keydown', onKey);
+          overlay.remove();
+        };
+        const onKey = (e) => {
+          if (e.key === 'Escape') close();
+        };
+        document.addEventListener('keydown', onKey);
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay || e.target.closest('.modal-close')) close();
+        });
+        document.body.appendChild(overlay);
+      });
+    }
     // watchlist toggle → button label + toast reflect state
     const wlBtn = view.querySelector('#wlBtn');
     const paintWl = () => {

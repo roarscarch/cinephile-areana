@@ -144,9 +144,13 @@ export class CinephileHQ {
       if (type !== 'movie' && type !== 'tv') throw new Error('Invalid media ID format');
       const data = await this.tmdbGet(`/${type}/${id}`, { append_to_response: 'credits,recommendations,videos' });
       const title = data.title || data.name;
+      const vids = ((data.videos && data.videos.results) || []).filter((v) => v.site === 'YouTube' && v.key);
+      const trailer =
+        (vids.find((v) => v.type === 'Trailer') || vids.find((v) => v.type === 'Teaser') || {}).key || null;
       const info = {
         id: `${type}/${data.id}`,
         title,
+        trailer,
         cover: this._img(data.backdrop_path),
         image: this._img(data.poster_path),
         description: data.overview,

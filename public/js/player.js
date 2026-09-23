@@ -204,6 +204,10 @@ const Player = (() => {
       // Web Audio needs a user gesture to start (autoplay policies). We lazily
       // build the gain graph on the first play / any pointer/key interaction.
       this.video.addEventListener('play', () => this._ensureAudioGraph());
+      // Watch history: log once per title+episode on first real playback
+      // (router renders it as a home row; finished titles leave Continue
+      // Watching, history remembers everything).
+      this.video.addEventListener('play', () => this._logHistory());
       this.shell.addEventListener('pointerdown', () => this._ensureAudioGraph());
       this.shell.addEventListener('keydown', () => this._ensureAudioGraph());
       this.video.addEventListener('play', () => this.shell.dispatchEvent(new CustomEvent('play-state', { detail: { playing: true } })));
@@ -395,6 +399,7 @@ const Player = (() => {
       this._started = false;
       this._lastSave = 0;
       this._upNextShown = false; // fresh episode → pre-end window re-arms
+      this._historyLogged = false; // fresh episode → log its first play
       this.resumePos = 0;
       // subtitle sync resets per title/episode (each release syncs differently);
       // the watch view re-applies the stored per-title offset right after load()
@@ -888,6 +893,33 @@ const Player = (() => {
           this._failedSubs.add(url); // never auto-pick this track again
           this.shell.dispatchEvent(new CustomEvent('subtitle-error', { detail: { label: label || '' } }));
         });
+    }
+
+    /** Watch-history log (localStorage, capped). Called on first play per load. */
+    _logHistory() {
+      if (this._historyLogged || !this.mediaId) return;
+      this._historyLogged = true;
+      try {
+        const KEY = 'cinephile-history';
+        const MAX = 30;
+        const [type] = String(this.mediaId).split('/');
+        const entry = {
+          id: this.mediaId,
+          episodeId: this.episodeId || '1-1',
+          title: this._title || 'Untitled',
+          image: this._image || '',
+          type,
+          t: Date.now(),
+        };
+        let list = [];
+        try {
+          const raw = JSON.parse(localStorage.getItem(KEY) || '[]');
+          if (Array.isArray(raw)) list = raw;
+        } catch {}
+        list = list.filter((h) => !(h.id === entry.id && (h.episodeId || '1-1') === entry.episodeId));
+        list.unshift(entry);
+        localStorage.setItem(KEY, JSON.stringify(list.slice(0, MAX)));
+      } catch {}
     }
 
     /** Re-render the active track's cues with the current offset + fps scale. */

@@ -104,6 +104,10 @@
         <div class="section-head"><h2>My List</h2></div>
         ${rowWithArrows('')}
       </section>
+      <section class="section" id="hwSection" hidden>
+        <div class="section-head"><h2>History</h2></div>
+        ${rowWithArrows('')}
+      </section>
       ${row(rows && rows.trendingMovies, 'Trending Movies', '#/movies')}
       ${row(rows && rows.trendingTv, 'Trending TV Shows', '#/tv-shows')}
       ${row(rows && rows.imdb75, 'IMDb 7.5+ Movies', '#/imdb75')}

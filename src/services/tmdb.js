@@ -166,9 +166,15 @@ class CinephileHQ {
       });
 
       const title = data.title || data.name;
+      // Trailer: first YouTube Trailer, else Teaser. Already fetched via
+      // append_to_response=videos — just surface the key (was dropped).
+      const vids = ((data.videos && data.videos.results) || []).filter((v) => v.site === 'YouTube' && v.key);
+      const trailer =
+        (vids.find((v) => v.type === 'Trailer') || vids.find((v) => v.type === 'Teaser') || {}).key || null;
       const info = {
         id: `${type}/${data.id}`,
         title,
+        trailer,
         cover: this._img(data.backdrop_path),
         image: this._img(data.poster_path),
         description: data.overview,
