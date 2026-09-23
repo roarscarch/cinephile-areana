@@ -20,11 +20,11 @@ const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS];
 // short deadline and serve whatever landed ([] on overrun). The underlying
 // fetches stay bounded (extractor) so sockets don't linger either.
 function withDeadline(promise, ms) {
-  let t;
-  const cap = new Promise((resolve) => {
-    t = setTimeout(() => resolve([]), ms);
+  let timeoutId;
+  const fallback = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve([]), ms);
   });
-  return Promise.race([promise, cap]).finally(() => clearTimeout(t));
+  return Promise.race([promise, fallback]).finally(() => clearTimeout(timeoutId));
 }
 
 // Validation results are cached per URL so dead tracks only pay their timeout
@@ -53,29 +53,29 @@ class CinephileHQ {
    * upstream fetch; repeat calls within ttlMs resolve instantly. Rejected
    * promises evict themselves so errors don't get stuck in the cache.
    */
-  _cached(key, ttlMs, fn) {
+  _cached(key, ttlMs, fetcher) {
     const now = Date.now();
     const hit = this._cache.get(key);
     if (hit) {
       if (hit.exp > now) return hit.promise;
       this._cache.delete(key);
     }
-    const p = Promise.resolve()
-      .then(fn)
-      .then((v) => {
-        this._cache.set(key, { exp: Date.now() + ttlMs, promise: Promise.resolve(v) });
-        return v;
+    const pending = Promise.resolve()
+      .then(fetcher)
+      .then((value) => {
+        this._cache.set(key, { exp: Date.now() + ttlMs, promise: Promise.resolve(value) });
+        return value;
       })
-      .catch((e) => {
+      .catch((error) => {
         this._cache.delete(key);
-        throw e;
+        throw error;
       });
-    this._cache.set(key, { exp: now + ttlMs, promise: p });
+    this._cache.set(key, { exp: now + ttlMs, promise: pending });
     if (this._cache.size > 600) {
-      const t = Date.now();
-      for (const [k, v] of this._cache) if (v.exp < t) this._cache.delete(k);
+      const sweepNow = Date.now();
+      for (const [cacheKey, entry] of this._cache) if (entry.exp < sweepNow) this._cache.delete(cacheKey);
     }
-    return p;
+    return pending;
   }
 
   // TMDB imdb_id for a title — used by the OpenSubtitles subtitle search.
@@ -132,7 +132,7 @@ class CinephileHQ {
       return {
         currentPage: data.page,
         hasNextPage: data.page < data.total_pages,
-        results: data.results.map((r) => this._item(type, r, type)),
+        results: data.results.map((row) => this._item(type, row, type)),
       };
     });
   }
@@ -147,7 +147,7 @@ class CinephileHQ {
       });
       const results = data.results
         .filter((r) => r.media_type === 'movie' || r.media_type === 'tv')
-        .map((r) => this._item(r.media_type, r, r.media_type));
+        .map((row) => this._item(row.media_type, row, row.media_type));
       return { currentPage: data.page, hasNextPage: data.page < data.total_pages, results };
     });
   }
@@ -186,7 +186,7 @@ class CinephileHQ {
         country: (data.production_countries || []).map((c) => c.name),
         duration: type === 'movie' ? `${data.runtime || 0} min` : undefined,
         rating: data.vote_average || 0,
-        recommendations: (data.recommendations?.results || []).slice(0, 12).map((r) => this._item(type, r, type)),
+        recommendations: (data.recommendations?.results || []).slice(0, 12).map((row) => this._item(type, row, type)),
       };
 
       // episodes for TV — ALL seasons fetched in parallel (was sequential:
@@ -197,7 +197,7 @@ class CinephileHQ {
           Array.from({ length: seasonCount }, (_, i) =>
             this.tmdb
               .get(`/tv/${id}/season/${i + 1}`)
-              .then((r) => r.data.episodes || [])
+              .then((season) => season.data.episodes || [])
               .catch(() => null) // season with no episodes — skip, keep the rest
           )
         );
@@ -225,7 +225,7 @@ class CinephileHQ {
   // ---- servers & sources ----
 
   async fetchEpisodeServers() {
-    return SERVERS.map((s) => ({ name: s.name }));
+    return SERVERS.map((server) => ({ name: server.name }));
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {
@@ -262,14 +262,14 @@ class CinephileHQ {
   // are dropped — the app only ever surfaces EN subs. OS/SubDL results pass
   // through untouched since their labels are release names, not language names.
   _mergeSubtitles(osSubs, subs, vsubs) {
-    const isEn = (s) => /english|\beng\b|\ben\b/i.test(`${s.label || ''} ${s.lang || ''}`);
-    const builtIn = [...subs, ...vsubs].filter(isEn); // drop non-EN family tracks
+    const isEnglish = (track) => /english|\beng\b|\ben\b/i.test(`${track.label || ''} ${track.lang || ''}`);
+    const builtIn = [...subs, ...vsubs].filter(isEnglish); // drop non-EN family tracks
     const merged = [...osSubs, ...builtIn];
     const seen = new Set();
-    return merged.filter((s) => {
-      const k = s.label || s.lang || 'unknown';
-      if (seen.has(k)) return false;
-      seen.add(k);
+    return merged.filter((track) => {
+      const dedupeKey = track.label || track.lang || 'unknown';
+      if (seen.has(dedupeKey)) return false;
+      seen.add(dedupeKey);
       return true;
     });
   }
@@ -283,19 +283,19 @@ class CinephileHQ {
    */
   async _validateSubtitles(subs) {
     const SELF = `http://127.0.0.1:${process.env.PORT || 3000}`; // for local routes (/subtitles/subdl)
-    const check = async (s) => {
-      const cached = SUB_VALID_CACHE.get(s.url);
-      if (cached && Date.now() - cached.ts < SUB_VALID_TTL) return cached.ok ? s : null;
+    const check = async (track) => {
+      const cached = SUB_VALID_CACHE.get(track.url);
+      if (cached && Date.now() - cached.ts < SUB_VALID_TTL) return cached.ok ? track : null;
       try {
-        const url = s.url.startsWith('/') ? SELF + s.url : s.url;
-        const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
-        if (!r.ok) return null;
-        const head = (await r.text()).slice(0, 4000);
+        const url = track.url.startsWith('/') ? SELF + track.url : track.url;
+        const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) return null;
+        const head = (await response.text()).slice(0, 4000);
         const ok = /^WEBVTT/m.test(head) || /-->/m.test(head); // subtitle text, not a zip/html/error
-        SUB_VALID_CACHE.set(s.url, { ok, ts: Date.now() });
-        return ok ? s : null;
+        SUB_VALID_CACHE.set(track.url, { ok, ts: Date.now() });
+        return ok ? track : null;
       } catch (e) {
-        SUB_VALID_CACHE.set(s.url, { ok: false, ts: Date.now() });
+        SUB_VALID_CACHE.set(track.url, { ok: false, ts: Date.now() });
         return null;
       }
     };
@@ -337,9 +337,9 @@ class CinephileHQ {
     // Pre-sign proxy URLs so the Worker can reject hotlinkers. Unsigned
     // fallback stays working while PLAY_SIGNING_KEY is unset or the Worker
     // runs in warn mode (REQUIRE_SIGNED!=1).
-    const sources = (stream.sources || []).map((s) => ({
-      ...s,
-      play: signPlayUrl({ url: s.url, referer: s.referer, origin: s.origin }) || undefined,
+    const sources = (stream.sources || []).map((source) => ({
+      ...source,
+      play: signPlayUrl({ url: source.url, referer: source.referer, origin: source.origin }) || undefined,
     }));
 
     // NOTE: no embedUrl — the old myflixerfree.to referral links were unused
@@ -354,18 +354,18 @@ class CinephileHQ {
   }
 
   async fetchMovieEmbedLinks(movieId, serverName = null) {
-    const servers = serverName ? SERVERS.filter((s) => s.name === serverName) : SERVERS;
+    const servers = serverName ? SERVERS.filter((server) => server.name === serverName) : SERVERS;
     const results = [];
-    for (const s of servers) {
+    for (const server of servers) {
       try {
-        const stream = await resolveStream({ type: 'movie', id: movieId, server: s.name });
+        const stream = await resolveStream({ type: 'movie', id: movieId, server: server.name });
         results.push({
-          server: s.name,
+          server: server.name,
           url: stream.sources[0]?.url || null,
           isM3U8: stream.sources[0]?.isM3U8 ?? false,
         });
-      } catch (e) {
-        console.error(`[embed] ${s.name} failed for ${movieId}:`, e.message);
+      } catch (error) {
+        console.error(`[embed] ${server.name} failed for ${movieId}:`, error.message);
       }
     }
     return { id: movieId, sources: results };
@@ -380,18 +380,18 @@ class CinephileHQ {
     if (!m) throw new Error('episodeId must be tvId:s{e} e.g. 1396:1-3');
     const [, season, episode] = m;
 
-    const servers = serverName ? SERVERS.filter((s) => s.name === serverName) : SERVERS;
+    const servers = serverName ? SERVERS.filter((server) => server.name === serverName) : SERVERS;
     const results = [];
-    for (const s of servers) {
+    for (const server of servers) {
       try {
-        const stream = await resolveStream({ type: 'tv', id: tvId, season, episode, server: s.name });
+        const stream = await resolveStream({ type: 'tv', id: tvId, season, episode, server: server.name });
         results.push({
-          server: s.name,
+          server: server.name,
           url: stream.sources[0]?.url || null,
           isM3U8: stream.sources[0]?.isM3U8 ?? false,
         });
-      } catch (e) {
-        console.error(`[embed] ${s.name} failed for tv ${tvId} ${se}:`, e.message);
+      } catch (error) {
+        console.error(`[embed] ${server.name} failed for tv ${tvId} ${se}:`, error.message);
       }
     }
     return { id: episodeId, sources: results };
@@ -425,8 +425,8 @@ class CinephileHQ {
     await Promise.all(
       ['iron', 'multi'].map(async (server) => {
         try {
-          const res = await resolveStream({ type, id, season, episode, server });
-          out[server] = [...new Set(res.sources.map((s) => s.dub).filter(Boolean))];
+          const stream = await resolveStream({ type, id, season, episode, server });
+          out[server] = [...new Set(stream.sources.map((source) => source.dub).filter(Boolean))];
         } catch (e) {
           out[server] = [];
         }
@@ -441,28 +441,28 @@ class CinephileHQ {
     // 10 min TTL — home-page sections resolve instantly on revisit
     return this._cached('recent:movies', 10 * 60 * 1000, async () => {
       const { data } = await this.tmdb.get('/movie/now_playing');
-      return data.results.slice(0, 20).map((r) => this._item('movie', r, 'movie'));
+      return data.results.slice(0, 20).map((row) => this._item('movie', row, 'movie'));
     });
   }
 
   async fetchRecentTvShows() {
     return this._cached('recent:tv', 10 * 60 * 1000, async () => {
       const { data } = await this.tmdb.get('/tv/on_the_air');
-      return data.results.slice(0, 20).map((r) => this._item('tv', r, 'tv'));
+      return data.results.slice(0, 20).map((row) => this._item('tv', row, 'tv'));
     });
   }
 
   async fetchTrendingMovies() {
     return this._cached('trending:movies', 10 * 60 * 1000, async () => {
       const { data } = await this.tmdb.get('/trending/movie/week');
-      return data.results.slice(0, 20).map((r) => this._item('movie', r, 'movie'));
+      return data.results.slice(0, 20).map((row) => this._item('movie', row, 'movie'));
     });
   }
 
   async fetchTrendingTvShows() {
     return this._cached('trending:tv', 10 * 60 * 1000, async () => {
       const { data } = await this.tmdb.get('/trending/tv/week');
-      return data.results.slice(0, 20).map((r) => this._item('tv', r, 'tv'));
+      return data.results.slice(0, 20).map((row) => this._item('tv', row, 'tv'));
     });
   }
 

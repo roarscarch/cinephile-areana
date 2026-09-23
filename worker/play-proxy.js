@@ -83,9 +83,9 @@ function looksLikePlaylistBytes(buf) {
 // auth = { exp, sig } inherited from the parent request so child segment
 // fetches pass signature enforcement too (same 2h window).
 function rewritePlaylist(text, playlistUrl, referer, origin, workerOrigin, auth = null) {
-  const toPlay = (u) => {
+  const toPlay = (rawUrl) => {
     try {
-      const abs = new URL(u, playlistUrl).href;
+      const abs = new URL(rawUrl, playlistUrl).href;
       const params = new URLSearchParams({ ref: referer });
       if (origin) params.set('origin', origin);
       params.set('url', abs);
@@ -101,18 +101,18 @@ function rewritePlaylist(text, playlistUrl, referer, origin, workerOrigin, auth 
   return text
     .split('\n')
     .map((line) => {
-      const t = line.trim();
-      if (!t) return line;
-      if (t.startsWith('#')) {
-        if (/URI="/i.test(t)) {
-          return line.replace(/URI="([^"]+)"/g, (m, u) => {
-            const r = toPlay(u);
-            return r ? `URI="${r}"` : m;
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (trimmed.startsWith('#')) {
+        if (/URI="/i.test(trimmed)) {
+          return line.replace(/URI="([^"]+)"/g, (fullMatch, embeddedUrl) => {
+            const rewritten = toPlay(embeddedUrl);
+            return rewritten ? `URI="${rewritten}"` : fullMatch;
           });
         }
         return line;
       }
-      return toPlay(t) || line;
+      return toPlay(trimmed) || line;
     })
     .join('\n');
 }
@@ -225,12 +225,12 @@ export default {
         });
       }
 
-      const ct = upstream.headers.get('content-type') || 'application/octet-stream';
+      const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
       const workerOrigin = url.origin;
       const baseHeaders = corsHeaders({ 'Cache-Control': 'no-store' });
 
       // 2a. Header says playlist — rewrite, cache, serve.
-      if (ct.includes('mpegurl') || ct.includes('m3u8')) {
+      if (contentType.includes('mpegurl') || contentType.includes('m3u8')) {
         const text = await upstream.text();
         const rewritten = rewritePlaylist(text, target, referer, origin, workerOrigin, childAuth);
         const res = mark(
@@ -252,14 +252,14 @@ export default {
 
       // 2b. Range request for bytes (mp4/segments) — stream straight through,
       // never buffer (movies are GBs; Workers memory is 128MB).
-      const cl = upstream.headers.get('content-length');
-      const clNum = cl ? Number(cl) : NaN;
-      if (range || (Number.isFinite(clNum) && clNum > PLAYLIST_MAX_BYTES)) {
+      const contentLength = upstream.headers.get('content-length');
+      const contentLengthNum = contentLength ? Number(contentLength) : NaN;
+      if (range || (Number.isFinite(contentLengthNum) && contentLengthNum > PLAYLIST_MAX_BYTES)) {
         const headers = new Headers(baseHeaders);
-        headers.set('Content-Type', ct);
-        if (cl) headers.set('Content-Length', cl);
-        const cr = upstream.headers.get('content-range');
-        if (cr) headers.set('Content-Range', cr);
+        headers.set('Content-Type', contentType);
+        if (contentLength) headers.set('Content-Length', contentLength);
+        const contentRange = upstream.headers.get('content-range');
+        if (contentRange) headers.set('Content-Range', contentRange);
         return mark(new Response(upstream.body, { status: upstream.status, headers }));
       }
 
@@ -292,7 +292,7 @@ export default {
 
       // 2d. Plain segment / subtitle / key — pass through + cache small ones.
       const headers = new Headers(baseHeaders);
-      headers.set('Content-Type', ct);
+      headers.set('Content-Type', contentType);
       headers.set('Content-Length', String(buf.length));
       if (buf.length <= PLAYLIST_MAX_BYTES) {
         headers.set('Cache-Control', `public, max-age=${SEGMENT_TTL_S}`);

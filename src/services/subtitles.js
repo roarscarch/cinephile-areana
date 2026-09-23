@@ -59,14 +59,14 @@ function extractSrtFromZip(buffer, episode) {
   if (episode) {
     const epNum = Number(episode);
     const epPadded = epNum < 10 ? `0${epNum}` : String(epNum);
-    const match = entries.find((e) => {
-      const fn = e.filename.toLowerCase();
+    const match = entries.find((entry) => {
+      const fileName = entry.filename.toLowerCase();
       return (
-        fn.includes(`e${epPadded}`) ||
-        fn.includes(`episode ${epNum}`) ||
-        fn.includes(`ep${epNum}`) ||
-        fn.includes(` ${epPadded} `) ||
-        fn.startsWith(epPadded)
+        fileName.includes(`e${epPadded}`) ||
+        fileName.includes(`episode ${epNum}`) ||
+        fileName.includes(`ep${epNum}`) ||
+        fileName.includes(` ${epPadded} `) ||
+        fileName.startsWith(epPadded)
       );
     });
     if (match) chosen = match;
@@ -87,8 +87,8 @@ async function fetchSubdlVtt(zipUrlPath, episode) {
   if (VTT_CACHE.has(cacheKey)) return VTT_CACHE.get(cacheKey);
 
   const fullUrl = `${SUBDL_DL_BASE}${zipUrlPath}`;
-  const res = await httpClient.get(fullUrl, { responseType: 'arraybuffer', timeout: 10000 });
-  const buffer = Buffer.from(res.data);
+  const response = await httpClient.get(fullUrl, { responseType: 'arraybuffer', timeout: 10000 });
+  const buffer = Buffer.from(response.data);
   const extracted = extractSrtFromZip(buffer, episode);
   if (!extracted || !extracted.content) throw new Error('Could not extract subtitle from zip archive');
 
@@ -114,8 +114,8 @@ async function searchSubdl({ type, imdbId, season, episode }) {
       params.season_number = Number(season);
       params.episode_number = Number(episode);
     }
-    const res = await httpClient.get(`${SUBDL_BASE}/subtitles`, { params, timeout: 6000 });
-    const list = (res.data && res.data.subtitles) || [];
+    const response = await httpClient.get(`${SUBDL_BASE}/subtitles`, { params, timeout: 6000 });
+    const list = (response.data && response.data.subtitles) || [];
     return list
       .slice(0, 4)
       .map((item) => ({
@@ -123,7 +123,7 @@ async function searchSubdl({ type, imdbId, season, episode }) {
         label: item.release_name || item.name || 'English (SubDL)',
         lang: 'en',
       }))
-      .filter((s) => s.url);
+      .filter((track) => track.url);
   } catch (e) {
     return [];
   }
@@ -136,14 +136,14 @@ async function loginOpenSubs() {
   const password = process.env.OPENSUBTITLES_PASSWORD;
   if (!key || !username || !password) throw new Error('opensubtitles credentials missing');
   if (loginToken && Date.now() < loginExp) return loginToken;
-  const r = await httpClient.post(
+  const loginResponse = await httpClient.post(
     `${OS_BASE}/login`,
     { username, password },
     {
       headers: { 'Api-Key': key, 'User-Agent': OS_UA, 'Content-Type': 'application/json' },
     }
   );
-  loginToken = r.data && r.data.token;
+  loginToken = loginResponse.data && loginResponse.data.token;
   loginExp = Date.now() + 24 * 60 * 60 * 1000;
   return loginToken;
 }
@@ -158,27 +158,27 @@ async function searchOpenSubs({ type, imdbId, season, episode }) {
       params.season_number = Number(season);
       params.episode_number = Number(episode);
     }
-    const r = await httpClient.get(`${OS_BASE}/subtitles`, {
+    const searchResponse = await httpClient.get(`${OS_BASE}/subtitles`, {
       params,
       headers: { 'Api-Key': key, 'User-Agent': OS_UA },
       timeout: 6000,
     });
-    const rows = (r.data && r.data.data) || [];
+    const rows = (searchResponse.data && searchResponse.data.data) || [];
     const hits = rows
-      .map((it) => {
-        const a = (it && it.attributes) || {};
-        const file = (a.files && a.files[0]) || {};
-        return { fileId: file.file_id, label: a.language || 'English', lang: a.language_id || 'en' };
+      .map((row) => {
+        const attrs = (row && row.attributes) || {};
+        const file = (attrs.files && attrs.files[0]) || {};
+        return { fileId: file.file_id, label: attrs.language || 'English', lang: attrs.language_id || 'en' };
       })
-      .filter((s) => s.fileId);
+      .filter((hit) => hit.fileId);
 
     const token = await loginOpenSubs();
     const subs = [];
-    for (const h of hits.slice(0, 2)) {
+    for (const hit of hits.slice(0, 2)) {
       try {
-        const dRes = await httpClient.post(
+        const downloadResponse = await httpClient.post(
           `${OS_BASE}/download`,
-          { file_id: h.fileId },
+          { file_id: hit.fileId },
           {
             headers: {
               'Api-Key': key,
@@ -188,8 +188,8 @@ async function searchOpenSubs({ type, imdbId, season, episode }) {
             },
           }
         );
-        if (dRes.data && dRes.data.link) {
-          subs.push({ url: dRes.data.link, label: h.label || 'English (OpenSubtitles)', lang: h.lang || 'en' });
+        if (downloadResponse.data && downloadResponse.data.link) {
+          subs.push({ url: downloadResponse.data.link, label: hit.label || 'English (OpenSubtitles)', lang: hit.lang || 'en' });
         }
       } catch (e) {}
     }

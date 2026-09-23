@@ -87,15 +87,15 @@ function signPlayUrl({ url, referer, origin }) {
   const exp = Math.floor(Date.now() / 1000) + PLAY_SIG_TTL_S;
   const msg = `${url}\n${ref}\n${org}\n${exp}`;
   const sig = crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex');
-  const p = new URLSearchParams({ ref });
-  if (org) p.set('origin', org);
-  p.set('url', url);
-  p.set('exp', String(exp));
-  p.set('sig', sig);
-  return `${base}/play?${p.toString()}`;
+  const params = new URLSearchParams({ ref });
+  if (org) params.set('origin', org);
+  params.set('url', url);
+  params.set('exp', String(exp));
+  params.set('sig', sig);
+  return `${base}/play?${params.toString()}`;
 }
 
-const b64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+const base64UrlToBytes = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 
 // Per-title caches: which provider last succeeded (skip the empty ones next time)
 // and resolved subtitles. Both are stable per title — makes repeat plays instant.
@@ -165,10 +165,10 @@ function decryptPayload(payload) {
   const decipher = crypto.createDecipheriv(
     'aes-256-gcm',
     Buffer.from(PEACHIFY_KEY_HEX, 'hex'),
-    b64url(iv)
+    base64UrlToBytes(iv)
   );
-  decipher.setAuthTag(b64url(tag));
-  const plain = Buffer.concat([decipher.update(b64url(ct)), decipher.final()]);
+  decipher.setAuthTag(base64UrlToBytes(tag));
+  const plain = Buffer.concat([decipher.update(base64UrlToBytes(ct)), decipher.final()]);
   return JSON.parse(plain.toString());
 }
 
@@ -199,7 +199,7 @@ async function fetchSubtitles(type, id, season, episode) {
   try {
     let url = `${PEACHIFY_API}/subs/${type}/${id}`;
     if (type === 'tv') url += `/${season}/${episode}`;
-    const res = await httpClient.get(url, {
+    const response = await httpClient.get(url, {
       headers: {
         Referer: PEACHIFY_REFERER,
         Origin: 'https://peachify.top',
@@ -207,14 +207,14 @@ async function fetchSubtitles(type, id, season, episode) {
       },
       timeout: 3000,
     });
-    const raw = res.data || [];
+    const raw = response.data || [];
     const subs = (Array.isArray(raw) ? raw : [])
-      .map((s) => ({
-        url: s.url || s.file || s.src,
-        label: s.label || s.language || s.lang || 'Unknown',
-        lang: s.lang || s.language || null,
+      .map((rawSub) => ({
+        url: rawSub.url || rawSub.file || rawSub.src,
+        label: rawSub.label || rawSub.language || rawSub.lang || 'Unknown',
+        lang: rawSub.lang || rawSub.language || null,
       }))
-      .filter((s) => s.url);
+      .filter((sub) => sub.url);
     subsCache.set(key, subs);
     return subs;
   } catch (e) {
@@ -225,14 +225,14 @@ async function fetchSubtitles(type, id, season, episode) {
 // ---- vidnest ----
 
 function vidnestDecode(data) {
-  const l = [...String(data)].map((c) => VIDNEST_ALPHABET.indexOf(c));
+  const codes = [...String(data)].map((c) => VIDNEST_ALPHABET.indexOf(c));
   const bytes = [];
-  for (let o = 0; o + 3 < l.length; o += 4) {
-    const a = l[o], b = l[o + 1], c = l[o + 2], d = l[o + 3];
-    if (a < 0 || a > 63) break; // padding/junk at the tail
-    bytes.push((a << 2) | (b >> 4));
-    if (c !== 64) bytes.push(((b & 15) << 4) | (c >> 2));
-    if (d !== 64) bytes.push(((c & 3) << 6) | d);
+  for (let offset = 0; offset + 3 < codes.length; offset += 4) {
+    const n0 = codes[offset], n1 = codes[offset + 1], n2 = codes[offset + 2], n3 = codes[offset + 3];
+    if (n0 < 0 || n0 > 63) break; // padding/junk at the tail
+    bytes.push((n0 << 2) | (n1 >> 4));
+    if (n2 !== 64) bytes.push(((n1 & 15) << 4) | (n2 >> 2));
+    if (n3 !== 64) bytes.push(((n2 & 3) << 6) | n3);
   }
   return Buffer.from(bytes).toString('utf8');
 }
@@ -272,18 +272,18 @@ function vidnestToResult(provider, data) {
     : [{ url: data.url, type: data.hls, headers: data.headers, referer: data.referer, label: data.label }];
 
   const sources = items
-    .map((s) => {
-      const url = s.url || s.file;
+    .map((stream) => {
+      const url = stream.url || stream.file;
       if (!url) return null;
       return {
         url,
-        quality: s.quality || s.resolution || s.label || 'auto',
+        quality: stream.quality || stream.resolution || stream.label || 'auto',
         // rogflix HLS hides behind /hls\d*/.../master.txt (no .m3u8 in the URL)
-        isM3U8: s.type === 'hls' || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(url)
+        isM3U8: stream.type === 'hls' || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(url)
           || /master\.txt($|\?)|\.txt($|\?)/i.test(url),
-        headers: s.headers || null,
-        referer: (s.headers && s.headers.Referer) || s.referer || null,
-        lang: s.language || null,
+        headers: stream.headers || null,
+        referer: (stream.headers && stream.headers.Referer) || stream.referer || null,
+        lang: stream.language || null,
       };
     })
     .filter(Boolean);
@@ -294,40 +294,41 @@ function vidnestToResult(provider, data) {
 async function resolveVidnest({ type, id, season, episode, server }) {
   if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
   if (server) {
-    const p = VIDNEST_PROVIDERS.find((x) => x.name === String(server).toLowerCase());
-    if (!p) throw new Error(`Unknown vidnest provider '${server}'`);
-    return vidnestToResult(p, await fetchVidnestProvider(p, type, id, season, episode));
+    const provider = VIDNEST_PROVIDERS.find((candidate) => candidate.name === String(server).toLowerCase());
+    if (!provider) throw new Error(`Unknown vidnest provider '${server}'`);
+    return vidnestToResult(provider, await fetchVidnestProvider(provider, type, id, season, episode));
   }
 
   // auto: last-known-good provider first, then the rest (some are content-gated
   // and 502 per-title, so cycling matters). Recently-failed providers are skipped.
   const key = titleKey(type, id, season, episode);
-  const cached = vidnestCache.get(key);
-  const baseOrder = cached
-    ? [cached, ...VIDNEST_PROVIDERS.filter((p) => p.name !== cached.name)]
+  const cachedName = vidnestCache.get(key);
+  const cachedProvider = cachedName && VIDNEST_PROVIDERS.find((candidate) => candidate.name === cachedName);
+  const baseOrder = cachedProvider
+    ? [cachedProvider, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedProvider.name)]
     : VIDNEST_PROVIDERS;
-  const order = baseOrder.filter((p) => !isDead('vidnest', p, key));
+  const order = baseOrder.filter((provider) => !isDead('vidnest', provider, key));
 
   // Probe concurrently (same reasoning as the peachify wave): a serial pass
   // over five 6s-timeout endpoints stacked into ~30s on flaky days. First
   // provider in priority order that yields streams wins; failures mark dead.
   let lastError = null;
   const settled = await Promise.allSettled(
-    order.map((p) =>
-      fetchVidnestProvider(p, type, id, season, episode).then((d) => vidnestToResult(p, d))
+    order.map((provider) =>
+      fetchVidnestProvider(provider, type, id, season, episode).then((payload) => vidnestToResult(provider, payload))
     )
   );
   for (let i = 0; i < order.length; i++) {
-    const p = order[i];
-    const s = settled[i];
-    if (s.status === 'rejected') {
-      lastError = s.reason;
-      markDead('vidnest', p, key);
+    const provider = order[i];
+    const outcome = settled[i];
+    if (outcome.status === 'rejected') {
+      lastError = outcome.reason;
+      markDead('vidnest', provider, key);
       continue;
     }
-    if (!s.value.sources.length) continue;
-    vidnestCache.set(key, p.name);
-    return s.value;
+    if (!outcome.value.sources.length) continue;
+    vidnestCache.set(key, provider.name);
+    return outcome.value;
   }
   throw new Error(`No vidnest source found${lastError ? ` (${lastError.message})` : ''}`);
 }
@@ -340,11 +341,11 @@ async function fetchVidnestSubtitles(type, id, season, episode) {
   try {
     let url = `https://sub.vdrk.site/v2/${type}/${id}`;
     if (type === 'tv') url += `/${season}/${episode}`;
-    const res = await httpClient.get(url, { timeout: 3000 });
-    const list = Array.isArray(res.data) ? res.data : [];
+    const response = await httpClient.get(url, { timeout: 3000 });
+    const list = Array.isArray(response.data) ? response.data : [];
     const subs = list
-      .map((s) => ({ url: s.file || s.url, label: s.label, lang: s.label || null }))
-      .filter((s) => s.url);
+      .map((rawSub) => ({ url: rawSub.file || rawSub.url, label: rawSub.label, lang: rawSub.label || null }))
+      .filter((sub) => sub.url);
     vdrkSubsCache.set(key, subs);
     return subs;
   } catch (e) {
@@ -422,84 +423,84 @@ async function probeStreamPlayable(src) {
 // family breaker run as side effects on every probe, so bookkeeping stays
 // correct even for probes still in flight after a winner was taken: a late
 // failure counts toward tripping its family breaker, a late success heals it.
-async function autoRace(pOrder, vOrder, key, opts) {
-  const cand = [];
+async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
+  const candidates = [];
   // peachify first: exact-arrival ties resolve to it (registered sooner),
   // preserving brand preference wherever speed doesn't differ.
-  for (const p of pOrder) cand.push(['peachify', p]);
-  for (const p of vOrder) cand.push(['vidnest', p]);
+  for (const provider of peachifyOrder) candidates.push(['peachify', provider]);
+  for (const provider of vidnestOrder) candidates.push(['vidnest', provider]);
 
   return await new Promise((resolve) => {
-    let left = cand.length;
-    if (!left) return resolve({ won: false, lastErr: {} });
-    let done = false;
-    const lastErr = {};
-    const fails = { peachify: 0, vidnest: 0 };
-    const totals = { peachify: pOrder.length, vidnest: vOrder.length };
-    const finish = (out) => {
-      if (!done) {
-        done = true;
-        resolve(out);
+    let remaining = candidates.length;
+    if (!remaining) return resolve({ won: false, lastErr: {} });
+    let finished = false;
+    const lastErrors = {};
+    const failCounts = { peachify: 0, vidnest: 0 };
+    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length };
+    const finish = (outcome) => {
+      if (!finished) {
+        finished = true;
+        resolve(outcome);
       }
     };
-    for (const [fam, p] of cand) {
-      (fam === 'peachify'
-        ? fetchProvider(p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
-            toResult(p, d)
+    for (const [family, provider] of candidates) {
+      (family === 'peachify'
+        ? fetchProvider(provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+            toResult(provider, payload)
           )
-        : fetchVidnestProvider(p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
-            vidnestToResult(p, d)
+        : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+            vidnestToResult(provider, payload)
           )
       )
         .then((result) => {
-          healFamily(fam); // any HTTP answer means the family is alive
-          return { ok: true, fam, p, result };
+          healFamily(family); // any HTTP answer means the family is alive
+          return { ok: true, family, provider, result };
         })
-        .catch((e) => {
-          console.error(`[extractor] ${fam} ${p.name} error:`, e.message || e);
-          markDead(fam, p, key);
-          fails[fam]++;
-          lastErr[fam] = e && e.message;
+        .catch((error) => {
+          console.error(`[extractor] ${family} ${provider.name} error:`, error.message || error);
+          markDead(family, provider, key);
+          failCounts[family]++;
+          lastErrors[family] = error && error.message;
           // whole family rejected (hangs/5xx/DNS) → trip: next titles skip us
-          if (fails[fam] === totals[fam]) {
-            familyDeadUntil.set(fam, Date.now() + FAMILY_TTL_MS);
+          if (failCounts[family] === familySizes[family]) {
+            familyDeadUntil.set(family, Date.now() + FAMILY_TTL_MS);
           }
           return { ok: false };
         })
-        .then(async (r) => {
-          // `left` counts candidates that are not yet FULLY settled — i.e. it is
+        .then(async (outcome) => {
+          // `remaining` counts candidates that are not yet FULLY settled — i.e. it is
           // decremented only after this candidate's probe has resolved. Doing it
           // up-front was a real bug: an empty/failed provider that happened to
-          // settle last drove `left` to 0 and resolved {won:false} while the
+          // settle last drove `remaining` to 0 and resolved {won:false} while the
           // slow-but-playable providers' probes were still in flight, and their
-          // later finish({won:true}) became a no-op (done already true). Auto
+          // later finish({won:true}) became a no-op (finished already true). Auto
           // then reported "no sources" for titles whose servers were fine.
           try {
             // Only the caller-VISIBLE winner records last-known-good: a probe
             // settling after someone else already won must not rewrite the
             // cache with a provider nobody actually played.
-            if (r.ok && r.result.sources.length && !done) {
-              const scKey = `${r.fam}:${r.p.name}:${key}`;
-              let playable = (streamOkCache.get(scKey) || 0) > Date.now();
+            if (outcome.ok && outcome.result.sources.length && !finished) {
+              const probeCacheKey = `${outcome.family}:${outcome.provider.name}:${key}`;
+              let playable = (streamOkCache.get(probeCacheKey) || 0) > Date.now();
               if (!playable) {
-                playable = await probeStreamPlayable(r.result.sources[0]);
-                if (playable) streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
+                playable = await probeStreamPlayable(outcome.result.sources[0]);
+                if (playable) streamOkCache.set(probeCacheKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
-                (r.fam === 'peachify' ? providerCache : vidnestCache).set(key, r.p.name);
-                return finish({ won: true, result: r.result });
+                (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
+                return finish({ won: true, result: outcome.result });
               }
               // API answered but the stream can't start — treat as dead, keep racing
-              markDead(r.fam, r.p, key);
-              fails[r.fam]++;
-              lastErr[r.fam] = `${r.p.name}: stream not startable`;
-              if (fails[r.fam] === totals[r.fam]) {
-                familyDeadUntil.set(r.fam, Date.now() + FAMILY_TTL_MS);
+              markDead(outcome.family, outcome.provider, key);
+              failCounts[outcome.family]++;
+              lastErrors[outcome.family] = `${outcome.provider.name}: stream not startable`;
+              if (failCounts[outcome.family] === familySizes[outcome.family]) {
+                familyDeadUntil.set(outcome.family, Date.now() + FAMILY_TTL_MS);
               }
             }
           } finally {
-            left--;
-            if (!left && !done) finish({ won: false, lastErr }); // every probe failed or was empty
+            remaining--;
+            if (!remaining && !finished) finish({ won: false, lastErr: lastErrors }); // every probe failed or was empty
           }
         });
     }
@@ -518,13 +519,13 @@ async function resolveStream({ type, id, season, episode, server, skip }) {
   if (server) {
     const name = String(server).toLowerCase();
     // vidnest family first (names don't collide with peachify's)
-    const vid = VIDNEST_PROVIDERS.find((x) => x.name === name);
-    if (vid) return resolveVidnest({ type, id, season, episode, server: name });
+    const vidnestProvider = VIDNEST_PROVIDERS.find((candidate) => candidate.name === name);
+    if (vidnestProvider) return resolveVidnest({ type, id, season, episode, server: name });
 
-    const p = PROVIDERS.find((x) => x.name === name || x.path === name);
-    if (!p) throw new Error(`Unknown provider '${server}'`);
-    const data = await fetchProvider(p, type, id, season, episode);
-    return toResult(p, data, type, id, season, episode);
+    const provider = PROVIDERS.find((candidate) => candidate.name === name || candidate.path === name);
+    if (!provider) throw new Error(`Unknown provider '${server}'`);
+    const data = await fetchProvider(provider, type, id, season, episode);
+    return toResult(provider, data, type, id, season, episode);
   }
 
   // auto: launch every healthy provider across BOTH families simultaneously
@@ -534,18 +535,22 @@ async function resolveStream({ type, id, season, episode, server, skip }) {
   // makes cold start ≈ fastest healthy upstream instead of the slowest loser.
   // familyDown gates keep a tripped breaker from launching probes at all.
   const key = titleKey(type, id, season, episode);
-  const pc = providerCache.get(key);
-  const skipSet = new Set((skip || []).map((s) => String(s).toLowerCase()));
-  const pOrder = (
-    pc ? [pc, ...PROVIDERS.filter((p) => p.name !== pc.name)] : PROVIDERS
-  ).filter((p) => !skipSet.has(p.name) && !familyDown('peachify') && !isDead('peachify', p, key));
-  const vc = vidnestCache.get(key);
-  const vOrder = (
-    vc ? [vc, ...VIDNEST_PROVIDERS.filter((p) => p.name !== vc.name)] : VIDNEST_PROVIDERS
-  ).filter((p) => !skipSet.has(p.name) && !familyDown('vidnest') && !isDead('vidnest', p, key));
+  // Last-known-good is stored as a NAME — resolve back to the provider object
+  // (a raw string here used to build a broken ".../undefined/..." URL).
+  const cachedPeachifyName = providerCache.get(key);
+  const cachedPeachify = cachedPeachifyName && PROVIDERS.find((provider) => provider.name === cachedPeachifyName);
+  const skipSet = new Set((skip || []).map((name) => String(name).toLowerCase()));
+  const peachifyOrder = (
+    cachedPeachify ? [cachedPeachify, ...PROVIDERS.filter((provider) => provider.name !== cachedPeachify.name)] : PROVIDERS
+  ).filter((provider) => !skipSet.has(provider.name) && !familyDown('peachify') && !isDead('peachify', provider, key));
+  const cachedVidnestName = vidnestCache.get(key);
+  const cachedVidnest = cachedVidnestName && VIDNEST_PROVIDERS.find((provider) => provider.name === cachedVidnestName);
+  const vidnestOrder = (
+    cachedVidnest ? [cachedVidnest, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedVidnest.name)] : VIDNEST_PROVIDERS
+  ).filter((provider) => !skipSet.has(provider.name) && !familyDown('vidnest') && !isDead('vidnest', provider, key));
 
-  const out = await autoRace(pOrder, vOrder, key, { type, id, season, episode });
-  if (out.won) return out.result;
+  const outcome = await autoRace(peachifyOrder, vidnestOrder, key, { type, id, season, episode });
+  if (outcome.won) return outcome.result;
 
   // All providers failed gracefully — return empty so the client can fall back
   // to the next server or show a clean message instead of a raw error.
@@ -560,18 +565,18 @@ async function resolveStream({ type, id, season, episode, server, skip }) {
 function unwrapProxies(src) {
   if (!src || !src.url || !/\/(?:m3u8|mp4)-proxy/.test(src.url)) return src;
   try {
-    const u = new URL(src.url);
-    const real = u.searchParams.get('url');
-    if (!real) return src;
+    const proxyUrl = new URL(src.url);
+    const targetUrl = proxyUrl.searchParams.get('url');
+    if (!targetUrl) return src;
     let headers = null;
     try {
-      const h = JSON.parse(u.searchParams.get('headers') || '{}');
+      const embedded = JSON.parse(proxyUrl.searchParams.get('headers') || '{}');
       headers = {
-        ...(h.origin ? { Origin: h.origin } : {}),
-        ...(h.referer ? { Referer: h.referer } : {}),
+        ...(embedded.origin ? { Origin: embedded.origin } : {}),
+        ...(embedded.referer ? { Referer: embedded.referer } : {}),
       };
     } catch (e) {}
-    return { ...src, url: real, headers };
+    return { ...src, url: targetUrl, headers };
   } catch (e) {
     return src;
   }
@@ -579,11 +584,11 @@ function unwrapProxies(src) {
 
 function toResult(provider, data, type, id, season, episode) {
   const sources = (data.sources || [])
-    .map((s) => {
-      const unwrapped = unwrapProxies(s);
-      const h = unwrapped.headers || {};
-      const referer = h.Referer || h.referer || null;
-      const origin = h.Origin || h.origin || null;
+    .map((rawSource) => {
+      const unwrapped = unwrapProxies(rawSource);
+      const rawHeaders = unwrapped.headers || {};
+      const referer = rawHeaders.Referer || rawHeaders.referer || null;
+      const origin = rawHeaders.Origin || rawHeaders.origin || null;
       return {
         url: unwrapped.url || unwrapped.src || unwrapped.file,
         quality: unwrapped.quality || unwrapped.resolution || unwrapped.height || 'auto',
@@ -599,15 +604,15 @@ function toResult(provider, data, type, id, season, episode) {
         origin,
       };
     })
-    .filter((s) => s.url);
+    .filter((source) => source.url);
 
-  const subtitles = (data.subtitles || []).map((s) => ({
-    url: s.url || s.file || s.src,
-    label: s.label || s.language || s.lang || 'Unknown',
-    lang: s.lang || s.language || null,
-    format: s.format || null,
-    encoding: s.encoding || null,
-  })).filter((s) => s.url);
+  const subtitles = (data.subtitles || []).map((rawSub) => ({
+    url: rawSub.url || rawSub.file || rawSub.src,
+    label: rawSub.label || rawSub.language || rawSub.lang || 'Unknown',
+    lang: rawSub.lang || rawSub.language || null,
+    format: rawSub.format || null,
+    encoding: rawSub.encoding || null,
+  })).filter((sub) => sub.url);
 
   return { provider: provider.name, sources, subtitles };
 }

@@ -116,10 +116,10 @@ function rewritePlaylist(text, url, referer, origin) {
   return text
     .split('\n')
     .map((line) => {
-      const t = line.trim();
-      if (!t) return line;
-      if (t.startsWith('#')) {
-        if (/URI="/i.test(t)) {
+      const trimmed = line.trim();
+      if (!trimmed) return line;
+      if (trimmed.startsWith('#')) {
+        if (/URI="/i.test(trimmed)) {
           return line.replace(/URI="([^"]+)"/g, (m, u) => {
             const r = toPlay(u);
             return r ? `URI="${r}"` : m;
@@ -127,7 +127,7 @@ function rewritePlaylist(text, url, referer, origin) {
         }
         return line;
       }
-      return toPlay(t) || line;
+      return toPlay(trimmed) || line;
     })
     .join('\n');
 }
@@ -136,16 +136,16 @@ function rewritePlaylist(text, url, referer, origin) {
 // an ambiguous response can be classified before we commit to a path.
 function readFirstChunk(stream) {
   return new Promise((resolve, reject) => {
-    const done = (fn, v) => {
+    const settle = (settleFn, value) => {
       stream.off('data', onData).off('end', onEnd).off('error', onError);
-      fn(v);
+      settleFn(value);
     };
-    const onData = (c) => {
+    const onData = (chunk) => {
       stream.pause();
-      done(resolve, c);
+      settle(resolve, chunk);
     };
-    const onEnd = () => done(resolve, Buffer.alloc(0));
-    const onError = (e) => done(reject, e);
+    const onEnd = () => settle(resolve, Buffer.alloc(0));
+    const onError = (error) => settle(reject, error);
     stream.on('data', onData).on('end', onEnd).on('error', onError);
   });
 }
@@ -155,9 +155,9 @@ function readRest(stream, cap) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
-    stream.on('data', (c) => {
-      total += c.length;
-      if (total <= cap) chunks.push(c);
+    stream.on('data', (chunk) => {
+      total += chunk.length;
+      if (total <= cap) chunks.push(chunk);
     });
     stream.on('end', () => resolve({ chunks, total }));
     stream.on('error', reject);
@@ -167,35 +167,35 @@ function readRest(stream, cap) {
 
 // mp4 / segments / subtitles: stream through (piped, constant memory) and tee
 // small un-ranged bodies into the LRU segment cache as they flow.
-async function pipeThrough(res, body, prelude, ct, upstream, range, cacheKey) {
+async function pipeThrough(res, body, prelude, contentType, upstream, range, cacheKey) {
   if (upstream.status === 206) res.status(206);
-  const cl = upstream.headers.get('content-length');
-  if (cl) res.set('Content-Length', cl);
+  const contentLength = upstream.headers.get('content-length');
+  if (contentLength) res.set('Content-Length', contentLength);
   if (upstream.headers.get('content-range')) res.set('Content-Range', upstream.headers.get('content-range'));
 
   await new Promise((resolve, reject) => {
-    body.on('error', (e) => {
+    body.on('error', (streamError) => {
       res.destroy();
-      reject(e);
+      reject(streamError);
     });
     res.on('close', resolve);
 
     // The sniffed prelude must ALWAYS reach the client — the tee below only
     // duplicates it into the segment cache, it doesn't replace the write.
-    for (const c of prelude) res.write(c);
+    for (const chunk of prelude) res.write(chunk);
 
-    const tee = !range && cl && Number(cl) > 0 && Number(cl) <= SEGMENT_CACHE_MAX_ITEM;
+    const tee = !range && contentLength && Number(contentLength) > 0 && Number(contentLength) <= SEGMENT_CACHE_MAX_ITEM;
     if (tee) {
       const chunks = [...prelude];
-      let total = prelude.reduce((n, c) => n + c.length, 0);
-      body.on('data', (c) => {
-        total += c.length;
-        if (total <= SEGMENT_CACHE_MAX_ITEM) chunks.push(c);
+      let total = prelude.reduce((sum, chunk) => sum + chunk.length, 0);
+      body.on('data', (chunk) => {
+        total += chunk.length;
+        if (total <= SEGMENT_CACHE_MAX_ITEM) chunks.push(chunk);
         else chunks.length = 0;
       });
       body.on('end', () => {
         if (chunks.length && total <= SEGMENT_CACHE_MAX_ITEM) {
-          cacheSegment(cacheKey, Buffer.concat(chunks), ct);
+          cacheSegment(cacheKey, Buffer.concat(chunks), contentType);
         }
       });
     }
@@ -267,14 +267,14 @@ module.exports = function streamRoutes() {
         return res.status(upstream.status).json({ error: `Upstream ${upstream.status}` });
       }
 
-      const ct = upstream.headers.get('content-type') || 'application/octet-stream';
+      const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
       res.set({
         'Access-Control-Allow-Origin': '*',
-        'Content-Type': ct,
+        'Content-Type': contentType,
         'Cache-Control': 'no-store',
       });
 
-      if (ct.includes('mpegurl') || ct.includes('m3u8')) {
+      if (contentType.includes('mpegurl') || contentType.includes('m3u8')) {
         // Header says playlist — rewrite and serve (master/variant both).
         const rewritten = rewritePlaylist(await upstream.text(), url, referer, origin);
         cachePlaylist(req.originalUrl, rewritten);
@@ -296,10 +296,10 @@ module.exports = function streamRoutes() {
             return res.type('application/vnd.apple.mpegurl').send(rewritten);
           }
           // Absurdly large for a playlist — fall through and stream verbatim.
-          return pipeThrough(res, body, [first, ...chunks], ct, upstream, range, req.originalUrl);
+          return pipeThrough(res, body, [first, ...chunks], contentType, upstream, range, req.originalUrl);
         }
 
-        return pipeThrough(res, body, first.length ? [first] : [], ct, upstream, range, req.originalUrl);
+        return pipeThrough(res, body, first.length ? [first] : [], contentType, upstream, range, req.originalUrl);
       }
     } catch (e) {
       if (!res.headersSent) res.status(502).json({ error: `Proxy error: ${e.message}` });

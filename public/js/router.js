@@ -82,122 +82,125 @@
   }
   function fillWatchlistRow() {
     const items = getWatchlist();
-    const wl = view.querySelector('#wlSection');
-    if (!wl) return;
+    const section = view.querySelector('#wlSection');
+    if (!section) return;
     if (!items.length) {
-      wl.hidden = true;
+      section.hidden = true;
       return;
     }
-    wl.hidden = false;
-    wl.querySelector('.row-wrap').outerHTML = rowWithArrows(items.map(card).join(''));
-    bindRowArrows(wl);
-    bindCards(wl);
+    section.hidden = false;
+    section.querySelector('.row-wrap').outerHTML = rowWithArrows(items.map(card).join(''));
+    bindRowArrows(section);
+    bindCards(section);
   }
 
   // ---- watch history row (everything played, newest first) ----
   function fillHistoryRow() {
-    let items = [];
-    try {
-      const raw = JSON.parse(localStorage.getItem('cinephile-history') || '[]');
-      if (Array.isArray(raw)) items = raw;
-    } catch (e) {}
-    const hw = view.querySelector('#hwSection');
-    if (!hw) return;
-    if (!items.length) {
-      hw.hidden = true;
+    const hwItems = (() => {
+      try {
+        const raw = JSON.parse(localStorage.getItem('cinephile-history') || '[]');
+        return Array.isArray(raw) ? raw : [];
+      } catch (error) {
+        return [];
+      }
+    })();
+    const hwSection = view.querySelector('#hwSection');
+    if (!hwSection) return;
+    if (!hwItems.length) {
+      hwSection.hidden = true;
       return;
     }
-    const rel = (t) => {
-      const m = Math.floor((Date.now() - (t || 0)) / 60000);
-      if (m < 1) return 'just now';
-      if (m < 60) return `${m}m ago`;
-      const h = Math.floor(m / 60);
-      if (h < 24) return `${h}h ago`;
-      const d = Math.floor(h / 24);
-      return d === 1 ? 'yesterday' : `${d}d ago`;
+    const relativeTime = (timestamp) => {
+      const minutes = Math.floor((Date.now() - (timestamp || 0)) / 60000);
+      if (minutes < 1) return 'just now';
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      const days = Math.floor(hours / 24);
+      return days === 1 ? 'yesterday' : `${days}d ago`;
     };
-    hw.hidden = false;
-    hw.querySelector('.row-wrap').outerHTML = rowWithArrows(
-      items.slice(0, 15).map((h) => {
-        const [type, id] = String(h.id || '').split('/');
-        const ep = h.episodeId || '1-1';
+    hwSection.hidden = false;
+    hwSection.querySelector('.row-wrap').outerHTML = rowWithArrows(
+      hwItems.slice(0, 15).map((entry) => {
+        const [type, id] = String(entry.id || '').split('/');
+        const resumeEp = entry.episodeId || '1-1';
         return card({
-          id: h.id,
-          href: type === 'tv' ? `#/watch/${type}/${id}/${ep}` : `#/watch/${type}/${id}`,
-          title: h.title || 'Untitled',
-          image: h.image || '',
+          id: entry.id,
+          href: type === 'tv' ? `#/watch/${type}/${id}/${resumeEp}` : `#/watch/${type}/${id}`,
+          title: entry.title || 'Untitled',
+          image: entry.image || '',
           releaseDate: '',
           type,
-          subtitle: type === 'tv' ? epLabel(ep) : rel(h.t),
+          subtitle: type === 'tv' ? epLabel(resumeEp) : relativeTime(entry.t),
         });
       }).join('')
     );
-    bindRowArrows(hw);
-    bindCards(hw);
+    bindRowArrows(hwSection);
+    bindCards(hwSection);
   }
 
   // ---- continue watching (from saved watch positions) ----
-  function fmtTime(sec) {
-    sec = Math.max(0, Math.floor(sec || 0));
-    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-    return h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
+  function fmtTime(totalSeconds) {
+    const floored = Math.max(0, Math.floor(totalSeconds || 0));
+    const hours = Math.floor(floored / 3600), minutes = Math.floor((floored % 3600) / 60), seconds = floored % 60;
+    return hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}` : `${minutes}:${String(seconds).padStart(2, '0')}`;
   }
 
   function continueWatchingItems() {
     try {
-      const map = JSON.parse(localStorage.getItem('cinephile-progress') || '{}');
+      const progressMap = JSON.parse(localStorage.getItem('cinephile-progress') || '{}');
       // One card per SERIES/movie: TV progress is keyed per mediaId (`tv/1396`)
       // with the latest episodeId inside, so a show never fans out into
       // E1/E2/E3… cards. Legacy per-episode keys (`tv/1396/1-1`) are merged in
       // below so old saves collapse into one card too (latest watch wins).
       const grouped = new Map(); // mediaKey -> { entry, episodeId }
-      const put = (mediaKey, episodeId, e) => {
-        if (!e || !(e.pos > 30) || (e.dur && e.dur - e.pos <= 15)) return;
-        const cur = grouped.get(mediaKey);
-        if (!cur || (e.t || 0) >= (cur.entry.t || 0)) grouped.set(mediaKey, { entry: e, episodeId });
+      const trackEntry = (mediaKey, episodeId, entry) => {
+        if (!entry || !(entry.pos > 30) || (entry.dur && entry.dur - entry.pos <= 15)) return;
+        const leading = grouped.get(mediaKey);
+        if (!leading || (entry.t || 0) >= (leading.entry.t || 0)) grouped.set(mediaKey, { entry, episodeId });
       };
-      for (const [key, e] of Object.entries(map)) {
-        const parts = String(key).split('/');
+      for (const [storageKey, entry] of Object.entries(progressMap)) {
+        const parts = String(storageKey).split('/');
         if (parts.length < 2) continue;
         if (parts[0] === 'tv' && parts.length >= 4) {
           // new shape: `tv/1396` + entry.episodeId
-          put(`${parts[0]}/${parts[1]}`, e.episodeId || parts.slice(2).join('-'), e);
+          trackEntry(`${parts[0]}/${parts[1]}`, entry.episodeId || parts.slice(2).join('-'), entry);
         } else if (parts[0] === 'tv' && parts.length === 3) {
           // legacy shape: `tv/1396/1-1`
-          put(`${parts[0]}/${parts[1]}`, parts[2], e);
+          trackEntry(`${parts[0]}/${parts[1]}`, parts[2], entry);
         } else {
           // movies (or anything else): one card per key as before
-          put(key, e.episodeId || '1-1', e);
+          trackEntry(storageKey, entry.episodeId || '1-1', entry);
         }
       }
       return [...grouped.entries()]
-        .map(([mediaKey, { entry: e, episodeId }]) => {
+        .map(([mediaKey, { entry, episodeId }]) => {
           const [type, id] = mediaKey.split('/');
-          const ep = episodeId || e.episodeId || '1-1';
+          const resumeEp = episodeId || entry.episodeId || '1-1';
           return {
             id: mediaKey,
-            href: type === 'tv' ? `#/watch/${type}/${id}/${ep}` : `#/watch/${type}/${id}`,
-            title: e.title || 'Continue watching',
-            image: e.image || '',
+            href: type === 'tv' ? `#/watch/${type}/${id}/${resumeEp}` : `#/watch/${type}/${id}`,
+            title: entry.title || 'Continue watching',
+            image: entry.image || '',
             releaseDate: '',
             type,
             // TV badge: which episode this card resumes from (S1 · E4)
-            subtitle: type === 'tv' ? epLabel(ep) : '',
-            progress: e.dur ? Math.round((e.pos / e.dur) * 100) : 0,
-            _t: e.t || 0,
+            subtitle: type === 'tv' ? epLabel(resumeEp) : '',
+            progress: entry.dur ? Math.round((entry.pos / entry.dur) * 100) : 0,
+            _t: entry.t || 0,
           };
         })
         .sort((a, b) => b._t - a._t)
         .slice(0, 10);
-    } catch (e) {
+    } catch (error) {
       return [];
     }
   }
 
   // '1-1' → 'S1 · E1' (tolerates 's1e1', '1/1' shapes too)
   function epLabel(ep) {
-    const m = String(ep || '').match(/^(?:s)?(\d+)(?:e|[-/])(\d+)$/i);
-    return m ? `S${m[1]} · E${m[2]}` : String(ep || '');
+    const parsed = String(ep || '').match(/^(?:s)?(\d+)(?:e|[-/])(\d+)$/i);
+    return parsed ? `S${parsed[1]} · E${parsed[2]}` : String(ep || '');
   }
 
   const prefetched = new Set();
@@ -210,15 +213,15 @@
   function prefetchMedia(href) {
     if (!href || prefetched.has(href)) return;
     prefetched.add(href);
-    const m = href.match(/^#\/(movie|tv)\/(\d+)/);
-    if (m) API.info(`${m[1]}/${m[2]}`).catch(() => {});
+    const routeMatch = href.match(/^#\/(movie|tv)\/(\d+)/);
+    if (routeMatch) API.info(`${routeMatch[1]}/${routeMatch[2]}`).catch(() => {});
   }
 
   function bindCards(scope) {
-    scope.querySelectorAll('.card[data-href]').forEach((c) => {
-      c.addEventListener('click', () => (location.hash = c.dataset.href));
-      c.addEventListener('mouseenter', () => prefetchMedia(c.dataset.href), { passive: true, once: true });
-      c.addEventListener('touchstart', () => prefetchMedia(c.dataset.href), { passive: true, once: true });
+    scope.querySelectorAll('.card[data-href]').forEach((cardEl) => {
+      cardEl.addEventListener('click', () => (location.hash = cardEl.dataset.href));
+      cardEl.addEventListener('mouseenter', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
+      cardEl.addEventListener('touchstart', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
     });
   }
 
@@ -236,50 +239,50 @@
   let searchTimer = null;
   let searchAbort = null;
 
-  async function runSearch(q) {
+  async function runSearch(query) {
     clearTimeout(searchTimer);
     searchAbort?.abort();
-    if (!q) {
+    if (!query) {
       searchDropdown.classList.remove('open');
       return;
     }
     searchTimer = setTimeout(async () => {
       searchDropdown.classList.add('open');
       searchDropdown.innerHTML = '<div class="sd-loading">Searching…</div>';
-      const ac = (searchAbort = new AbortController());
+      const aborter = (searchAbort = new AbortController());
       try {
-        const data = await API.get(`/search?query=${encodeURIComponent(q)}`, { signal: ac.signal });
-        if (ac.signal.aborted) return;
+        const data = await API.get(`/search?query=${encodeURIComponent(query)}`, { signal: aborter.signal });
+        if (aborter.signal.aborted) return;
         const items = (data.results || []).slice(0, 6);
         if (!items.length) {
-          searchDropdown.innerHTML = '<div class="sd-empty">No results for "' + escapeHtml(q) + '"</div>';
+          searchDropdown.innerHTML = '<div class="sd-empty">No results for "' + escapeHtml(query) + '"</div>';
           return;
         }
         searchDropdown.innerHTML = items
-          .map((it) => {
-            const [type, id] = it.id.split('/');
+          .map((media) => {
+            const [type, id] = media.id.split('/');
             return `
               <div class="sd-item" data-href="#/${type}/${id}">
-                ${it.image ? `<img class="sd-poster" src="${it.image}" alt="" loading="lazy"/>` : `<div class="sd-poster"></div>`}
+                ${media.image ? `<img class="sd-poster" src="${media.image}" alt="" loading="lazy"/>` : `<div class="sd-poster"></div>`}
                 <div class="sd-info">
-                  <div class="sd-title">${escapeHtml(it.title)}</div>
-                  <div class="sd-meta">${it.releaseDate ? it.releaseDate + ' · ' : ''}${TYPE_LABEL[type]}</div>
+                  <div class="sd-title">${escapeHtml(media.title)}</div>
+                  <div class="sd-meta">${media.releaseDate ? media.releaseDate + ' · ' : ''}${TYPE_LABEL[type]}</div>
                 </div>
                 <span class="sd-type ${type}">${TYPE_LABEL[type]}</span>
               </div>`;
           })
           .join('') +
-          `<div class="sd-item" data-href="#/search?q=${encodeURIComponent(q)}">
-             <div class="sd-info"><div class="sd-title" style="color:var(--accent)">See all results for “${escapeHtml(q)}”</div></div>
-           </div>`;
-        searchDropdown.querySelectorAll('.sd-item').forEach((it) =>
-          it.addEventListener('click', () => {
-            location.hash = it.dataset.href;
+          `<div class="sd-item" data-href="#/search?q=${encodeURIComponent(query)}">
+              <div class="sd-info"><div class="sd-title" style="color:var(--accent)">See all results for “${escapeHtml(query)}”</div></div>
+            </div>`;
+        searchDropdown.querySelectorAll('.sd-item').forEach((cardEl) =>
+          cardEl.addEventListener('click', () => {
+            location.hash = cardEl.dataset.href;
             closeSearch();
           })
         );
-      } catch (e) {
-        if (!ac.signal.aborted) searchDropdown.classList.remove('open');
+      } catch (error) {
+        if (!aborter.signal.aborted) searchDropdown.classList.remove('open');
       }
     }, 60);
   }
@@ -325,10 +328,10 @@
   // hydration path and the plain fetch path so both stay in sync.
   function hydrateHomeRow(scope, endpoint, rowIndex) {
     return API.get(endpoint)
-      .then((data) => {
+      .then((payload) => {
         // the user may have navigated away while the request was in flight
         if (!scope.isConnected || !document.contains(scope)) return;
-        const items = (Array.isArray(data) ? data : data.results || []).slice(0, 14);
+        const items = (Array.isArray(payload) ? payload : payload.results || []).slice(0, 14);
         const sectionEl = scope.querySelectorAll('.section[data-row]')[rowIndex];
         if (!sectionEl) return;
         sectionEl.querySelector('.row-wrap').outerHTML = rowWithArrows(items.map(card).join(''));
@@ -355,20 +358,20 @@
     const heroInput = document.getElementById('heroSearch');
     const heroBtn = document.getElementById('heroSearchBtn');
     if (heroInput && heroBtn) {
-      const go = () => {
+      const submitHeroSearch = () => {
         if (heroInput.value.trim()) location.hash = `#/search?q=${encodeURIComponent(heroInput.value.trim())}`;
       };
-      heroBtn.addEventListener('click', go);
-      heroInput.addEventListener('keydown', (e) => e.key === 'Enter' && go());
+      heroBtn.addEventListener('click', submitHeroSearch);
+      heroInput.addEventListener('keydown', (e) => e.key === 'Enter' && submitHeroSearch());
       heroInput.addEventListener('input', () => runSearch(heroInput.value));
     }
 
     // Continue Watching row from saved positions (hidden when nothing is in progress)
-    const cwItems = continueWatchingItems();
-    if (cwItems.length) {
-      const cw = view.querySelector('#cwSection');
-      cw.hidden = false;
-      cw.querySelector('.row-wrap').outerHTML = rowWithArrows(cwItems.map(card).join(''));
+    const continueItems = continueWatchingItems();
+    if (continueItems.length) {
+      const continueSection = view.querySelector('#cwSection');
+      continueSection.hidden = false;
+      continueSection.querySelector('.row-wrap').outerHTML = rowWithArrows(continueItems.map(card).join(''));
     }
     // My List row from the watchlist (hidden when empty)
     fillWatchlistRow();
@@ -393,7 +396,7 @@
 
     // fetch path: bind the Continue Watching row (the four data rows get
     // replaced + rebound below once their data arrives)
-    if (cwItems.length) {
+    if (continueItems.length) {
       bindRowArrows(view);
       bindCards(view);
     }
@@ -407,7 +410,7 @@
     ];
     // all five rows fetch in parallel; one failure degrades to an empty row
     // instead of stalling the rest
-    sections.forEach(([ep], i) => hydrateHomeRow(view, ep, i));
+    sections.forEach(([endpoint], index) => hydrateHomeRow(view, endpoint, index));
   };
 
   // ---- browse ----
@@ -471,12 +474,12 @@
 
   // ---- search results ----
   views.search = async (params) => {
-    const q = params.q || '';
+    const query = params.q || '';
     scrollTop();
     setActiveNav(null);
     view.innerHTML = `
       <div class="page-head">
-        <h1>Results for “${escapeHtml(q)}”</h1><p>Movies &amp; TV shows</p>
+        <h1>Results for “${escapeHtml(query)}”</h1><p>Movies &amp; TV shows</p>
       </div>
       <div class="section">
         <div class="grid" id="searchGrid">${'<div class="skel" style="aspect-ratio:2/3"></div>'.repeat(12)}</div>
@@ -493,7 +496,7 @@
       loadBtn.disabled = true;
       loadBtn.textContent = 'Loading…';
       try {
-        const data = await API.search(q, page);
+        const data = await API.search(query, page);
         const items = data.results || [];
         hasNext = !!data.hasNextPage;
         if (!items.length && page === 1) {
@@ -674,27 +677,27 @@
 
     // episodes
     if (type === 'tv' && episodes.length) {
-      const seasons = [...new Set(episodes.map((e) => e.season))].sort((a, b) => a - b);
+      const seasons = [...new Set(episodes.map((episode) => episode.season))].sort((a, b) => a - b);
       const select = view.querySelector('#seasonSelect');
-      select.innerHTML = seasons.map((s) => `<option value="${s}">Season ${s}</option>`).join('');
+      select.innerHTML = seasons.map((season) => `<option value="${season}">Season ${season}</option>`).join('');
       const epGrid = view.querySelector('#episodes');
 
-      function renderSeason(s) {
+      function renderSeason(season) {
         epGrid.innerHTML = episodes
-          .filter((e) => e.season === s)
+          .filter((episode) => episode.season === season)
           .map(
-            (e) => `
-            <div class="episode" data-href="#/watch/tv/${id}/${e.id}">
+            (episode) => `
+            <div class="episode" data-href="#/watch/tv/${id}/${episode.id}">
               <div class="ep-thumb" style="background:linear-gradient(135deg,var(--surface-2),var(--surface))"></div>
               <div class="ep-body">
-                <div class="ep-title">${e.number}. ${escapeHtml(e.title || 'Episode ' + e.number)}</div>
-                <div class="ep-num">S${e.season} · E${e.number}</div>
+                <div class="ep-title">${episode.number}. ${escapeHtml(episode.title || 'Episode ' + episode.number)}</div>
+                <div class="ep-num">S${episode.season} · E${episode.number}</div>
               </div>
             </div>`
           )
           .join('');
-        epGrid.querySelectorAll('.episode').forEach((x) =>
-          x.addEventListener('click', () => (location.hash = x.dataset.href))
+        epGrid.querySelectorAll('.episode').forEach((episodeEl) =>
+          episodeEl.addEventListener('click', () => (location.hash = episodeEl.dataset.href))
         );
       }
       select.addEventListener('change', () => renderSeason(parseInt(select.value)));
@@ -777,20 +780,20 @@
       const labels = Player.PROVIDER_LABELS;
       const order = Player.SERVER_ORDER || [];
       const rank = (name) => {
-        const i = order.indexOf(name);
-        return i < 0 ? 999 : i;
+        const position = order.indexOf(name);
+        return position < 0 ? 999 : position;
       };
       bar.innerHTML =
         `<button class="server-btn active" data-server="">Auto</button>` +
         [...servers]
           .sort((a, b) => rank(a.name) - rank(b.name))
-          .map((s) => `<button class="server-btn" data-server="${s.name}" title="Server ${rank(s.name) + 1}">${labels[s.name] || s.name}</button>`)
+          .map((server) => `<button class="server-btn" data-server="${server.name}" title="Server ${rank(server.name) + 1}">${labels[server.name] || server.name}</button>`)
           .join('');
-      bar.querySelectorAll('.server-btn').forEach((b) =>
-        b.addEventListener('click', () => {
-          bar.querySelectorAll('.server-btn').forEach((x) => x.classList.remove('active'));
-          b.classList.add('active', 'loading');
-          player.switchServer(b.dataset.server).finally(() => b.classList.remove('loading'));
+      bar.querySelectorAll('.server-btn').forEach((button) =>
+        button.addEventListener('click', () => {
+          bar.querySelectorAll('.server-btn').forEach((other) => other.classList.remove('active'));
+          button.classList.add('active', 'loading');
+          player.switchServer(button.dataset.server).finally(() => button.classList.remove('loading'));
         })
       );
     } catch (e) {}
@@ -833,12 +836,12 @@
     const volPop = view.querySelector('#volPop');
     const volRange = view.querySelector('#volRange');
     const volLabel = view.querySelector('#volLabel');
-    const syncVol = (v) => {
-      const pct = Math.round(v * 100);
-      volRange.value = pct;
-      volLabel.textContent = pct + '%';
-      volBtn.textContent = (pct > 150 ? '🔊' : pct > 100 ? '🔉' : '🔈') + ' ' + pct + '%';
-      volBtn.title = `Volume ${pct}% (boost beyond 100%; shortcut: ↑ / ↓)`;
+    const syncVol = (volume) => {
+      const percent = Math.round(volume * 100);
+      volRange.value = percent;
+      volLabel.textContent = percent + '%';
+      volBtn.textContent = (percent > 150 ? '🔊' : percent > 100 ? '🔉' : '🔈') + ' ' + percent + '%';
+      volBtn.title = `Volume ${percent}% (boost beyond 100%; shortcut: ↑ / ↓)`;
     };
     volBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -873,21 +876,21 @@
     shell.addEventListener('subtitles-ready', () => refreshSubtitleUI());
     shell.addEventListener('sources-ready', (e) => {
       const labels = Player.PROVIDER_LABELS;
-      const p = e.detail.provider;
+      const winner = e.detail.provider;
       // sync the server buttons to whoever actually won (auto races and
       // fallbacks may land on a server the user never clicked)
-      bar.querySelectorAll('.server-btn').forEach((x) =>
-        x.classList.toggle('active', x.dataset.server === (p || ''))
+      bar.querySelectorAll('.server-btn').forEach((button) =>
+        button.classList.toggle('active', button.dataset.server === (winner || ''))
       );
-      const n = (player.subtitles || []).length;
+      const trackCount = (player.subtitles || []).length;
       document.getElementById('providerInfo').textContent =
-        p ? `${labels[p] || p}${n ? ` · ${n} subtitle${n === 1 ? '' : 's'}` : ''}` : '';
+        winner ? `${labels[winner] || winner}${trackCount ? ` · ${trackCount} subtitle${trackCount === 1 ? '' : 's'}` : ''}` : '';
       if ((player.subtitles || []).length) refreshSubtitleUI(); // server switch → reapply
       collectDubs();
     });
     subsSelect.addEventListener('change', () => {
-      const i = subsSelect.value;
-      const sub = i === '' ? null : (player.subtitles || [])[parseInt(i, 10)];
+      const selected = subsSelect.value;
+      const sub = selected === '' ? null : (player.subtitles || [])[parseInt(selected, 10)];
       player.loadSubtitle(sub ? sub.url : '', sub ? sub.label : '');
       localStorage.setItem('cinephile-subtitle', sub ? sub.label : 'off'); // Off = remember "no subs"
     });
@@ -991,7 +994,7 @@
       const current = player.server || player.provider;
       if (owner && owner !== current) {
         // language lives on another server — switch, then apply it
-        bar.querySelectorAll('.server-btn').forEach((x) => x.classList.toggle('active', x.dataset.server === owner));
+        bar.querySelectorAll('.server-btn').forEach((button) => button.classList.toggle('active', button.dataset.server === owner));
         player
           .switchServer(owner)
           .then(() => {
@@ -1036,40 +1039,40 @@
     // server, blip), we retry independently here; both paths share one apply().
     const nextBtn = view.querySelector('.next-ep');
     const nextChip = view.querySelector('#nextChip');
-    const applyNext = (epsRaw) => {
-      if (!Array.isArray(epsRaw) || !epsRaw.length || !nextBtn) return false;
+    const applyNext = (rawEpisodes) => {
+      if (!Array.isArray(rawEpisodes) || !rawEpisodes.length || !nextBtn) return false;
       // normalize whatever episodeId shape arrives ('2-10', 's2e10', '2/e10')
-      const norm = (v) => {
-        const m = String(v).match(/^(?:s)?(\d+)(?:e|[-/])(\d+)$/i);
-        return m ? [Number(m[1]), Number(m[2])] : null;
+      const parseEpisodeId = (value) => {
+        const parsed = String(value).match(/^(?:s)?(\d+)(?:e|[-/])(\d+)$/i);
+        return parsed ? [Number(parsed[1]), Number(parsed[2])] : null;
       };
-      const eps = [...epsRaw].sort((a, b) => a.season - b.season || a.number - b.number);
-      // exact id match first, structured fallback (NEVER default to eps[0])
-      let i = eps.findIndex((e) => String(e.id) === String(episodeId));
-      if (i < 0) {
-        const cur = norm(episodeId);
-        if (!cur) return false;
-        i = eps.findIndex((e) => e.season === cur[0] && e.number === cur[1]);
+      const episodes = [...rawEpisodes].sort((a, b) => a.season - b.season || a.number - b.number);
+      // exact id match first, structured fallback (NEVER default to episodes[0])
+      let currentIndex = episodes.findIndex((episode) => String(episode.id) === String(episodeId));
+      if (currentIndex < 0) {
+        const current = parseEpisodeId(episodeId);
+        if (!current) return false;
+        currentIndex = episodes.findIndex((episode) => episode.season === current[0] && episode.number === current[1]);
       }
-      if (i < 0) return false;
-      const nxt = eps[i + 1];
-      if (!nxt) return false; // last episode — nothing to offer
-      player.setNextEpisode(nxt.id);
+      if (currentIndex < 0) return false;
+      const nextEpisode = episodes[currentIndex + 1];
+      if (!nextEpisode) return false; // last episode — nothing to offer
+      player.setNextEpisode(nextEpisode.id);
       // Prefetch the NEXT episode's sources once the pre-end window opens:
       // warms server-side last-known-good/dead-mark caches so clicking Next
       // resolves near-instantly. Fire-and-forget, once per view.
       shell.addEventListener(
         'up-next',
         () => {
-          if (player.mediaId === mediaId) API.sources(mediaId, nxt.id).catch(() => {});
+          if (player.mediaId === mediaId) API.sources(mediaId, nextEpisode.id).catch(() => {});
         },
         { once: true }
       );
-      const go = () => { location.hash = `#/watch/${type}/${id}/${nxt.id}`; };
-      nextBtn.onclick = go;
-      nextChip.onclick = go;
+      const goNext = () => { location.hash = `#/watch/${type}/${id}/${nextEpisode.id}`; };
+      nextBtn.onclick = goNext;
+      nextChip.onclick = goNext;
       nextChip.hidden = false;
-      nextChip.textContent = `▶ S${nxt.season} · E${nxt.number}`;
+      nextChip.textContent = `▶ S${nextEpisode.season} · E${nextEpisode.number}`;
       return true;
     };
     const wirePillReveal = () => {
@@ -1082,7 +1085,7 @@
     if (type === 'tv') {
       if (!applyNext(info && info.episodes)) {
         API.info(mediaId)
-          .then((inf) => applyNext(inf && inf.episodes))
+          .then((freshInfo) => applyNext(freshInfo && freshInfo.episodes))
           .catch(() => {}); // silent: last-episode/no-data hides the affordance
       }
     }

@@ -90,21 +90,21 @@ const Player = (() => {
 
   function pickBest(sources) {
     if (!sources || !sources.length) return null;
-    const ranked = [...sources].sort((a, b) => {
-      const q = (s) => {
-        const v = parseInt(s.quality || '0', 10);
-        return Number.isFinite(v) ? v : 0;
+    const ranked = [...sources].sort((first, second) => {
+      const qualityOf = (source) => {
+        const parsed = parseInt(source.quality || '0', 10);
+        return Number.isFinite(parsed) ? parsed : 0;
       };
       // Quality first; among equal quality prefer browser-direct sources
       // (zero proxy cost) over proxied ones; HLS last as before.
-      const dir = (s) => {
+      const directRank = (source) => {
         try {
-          return isDirect(s.url, s) ? 1 : 0;
+          return isDirect(source.url, source) ? 1 : 0;
         } catch {
           return 0;
         }
       };
-      return q(b) - q(a) || dir(b) - dir(a) || (b.isM3U8 ? 1 : 0) - (a.isM3U8 ? 1 : 0);
+      return qualityOf(second) - qualityOf(first) || directRank(second) - directRank(first) || (second.isM3U8 ? 1 : 0) - (first.isM3U8 ? 1 : 0);
     });
     return ranked[0];
   }
@@ -126,11 +126,11 @@ const Player = (() => {
   function parseVtt(text) {
     const cues = [];
     const blockRe = /(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})[^\n]*\n([\s\S]*?)(?=\n\s*\n|\n\d{2}:\d{2}:\d{2}|$)/g;
-    const toSec = (t) => t.split(':').reduce((a, v) => a * 60 + parseFloat(v), 0);
-    let m;
-    while ((m = blockRe.exec(text)) !== null) {
+    const toSeconds = (stamp) => stamp.split(':').reduce((total, part) => total * 60 + parseFloat(part), 0);
+    let match;
+    while ((match = blockRe.exec(text)) !== null) {
       try {
-        cues.push(new VTTCue(toSec(m[1]), toSec(m[2]), m[3].trim()));
+        cues.push(new VTTCue(toSeconds(match[1]), toSeconds(match[2]), match[3].trim()));
       } catch (e) {}
     }
     return cues;
@@ -358,19 +358,19 @@ const Player = (() => {
     }
 
     _flashSeek(dir, chain) {
-      let el = this.shell.querySelector('.seek-flash');
-      if (!el) {
-        el = document.createElement('div');
-        el.className = 'seek-flash';
-        el.setAttribute('aria-hidden', 'true');
-        this.shell.appendChild(el);
+      let flash = this.shell.querySelector('.seek-flash');
+      if (!flash) {
+        flash = document.createElement('div');
+        flash.className = 'seek-flash';
+        flash.setAttribute('aria-hidden', 'true');
+        this.shell.appendChild(flash);
       }
-      el.textContent = `${dir < 0 ? '−' : '+'}${10 * chain}s`;
-      el.classList.toggle('left', dir < 0);
-      el.classList.toggle('right', dir > 0);
-      el.classList.remove('show');
-      void el.offsetWidth; // restart the fade animation
-      el.classList.add('show');
+      flash.textContent = `${dir < 0 ? '−' : '+'}${10 * chain}s`;
+      flash.classList.toggle('left', dir < 0);
+      flash.classList.toggle('right', dir > 0);
+      flash.classList.remove('show');
+      void flash.offsetWidth; // restart the fade animation
+      flash.classList.add('show');
     }
 
     /** Subtitle cue size (S/M/L/XL), persisted across titles. */
@@ -669,12 +669,12 @@ const Player = (() => {
           if (attachId === this._attachId) this._fallbackNext();
         }, { once: true });
         // no manifest — quality menu comes from the source labels instead
-        const qs = [...new Set((this.sources || []).map((s) => s.quality).filter((q) => q && q !== 'auto'))];
+        const qs = [...new Set((this.sources || []).map((source) => source.quality).filter((quality) => quality && quality !== 'auto'))];
         this._emitQuality(qs);
       }
 
       // subtitles load on demand via loadSubtitle() — no eager fetches
-      [...(this.video.textTracks || [])].forEach((t) => (t.mode = 'hidden'));
+      [...(this.video.textTracks || [])].forEach((track) => (track.mode = 'hidden'));
     }
 
     _fallbackNext() {
@@ -755,17 +755,17 @@ const Player = (() => {
     downloadUrl() {
       const src = this._currentSource;
       if (!src) return '';
-      const p = new URLSearchParams({ url: src.url, title: this._title || 'cinephiles-download' });
-      if (src.referer) p.set('ref', src.referer);
-      if (src.isM3U8) p.set('hls', '1');
+      const params = new URLSearchParams({ url: src.url, title: this._title || 'cinephiles-download' });
+      if (src.referer) params.set('ref', src.referer);
+      if (src.isM3U8) params.set('hls', '1');
       // chosen quality: download exactly that variant playlist, not the
       // highest the master would give us
       if (src.isM3U8 && this.hls && this.quality !== 'auto') {
-        const level = (this.hls.levels || []).find((l) => String(l.height) === String(this.quality));
+        const level = (this.hls.levels || []).find((rendition) => String(rendition.height) === String(this.quality));
         if (level && level.url) {
           try {
             new URL(level.url); // absolute
-            p.set('url', level.url);
+            params.set('url', level.url);
           } catch {
             /* relative — keep the master */
           }
@@ -773,8 +773,8 @@ const Player = (() => {
       }
       // subtitles: the selected track, or ALL available when none is picked
       const subs = this._subtitle ? [this._subtitle] : (this.subtitles || []);
-      if (subs.length) p.set('subs', subs.map((s) => `${s.url}|${s.label || s.lang || ''}`).join(','));
-      return `/download?${p.toString()}`;
+      if (subs.length) params.set('subs', subs.map((track) => `${track.url}|${track.label || track.lang || ''}`).join(','));
+      return `/download?${params.toString()}`;
     }
 
     _emitQuality(levels) {
@@ -790,11 +790,11 @@ const Player = (() => {
           this.hls.currentLevel = -1;
           return;
         }
-        const idx = (this.hls.levels || []).findIndex((l) => String(l.height) === String(value));
+        const idx = (this.hls.levels || []).findIndex((rendition) => String(rendition.height) === String(value));
         if (idx >= 0) this.hls.currentLevel = idx;
       } else if (this.sources && this.sources.length > 1) {
         // non-HLS: re-attach the source that carries the chosen quality
-        const src = this.sources.find((s) => String(s.quality) === String(value));
+        const src = this.sources.find((candidate) => String(candidate.quality) === String(value));
         if (src) {
           this.currentIndex = this.sources.indexOf(src);
           this._attach(src);
@@ -874,11 +874,11 @@ const Player = (() => {
     }
 
     _fetchIntro() {
-      const id = this.mediaId.split('/')[1];
-      fetch(`https://api.theintrodb.org/v2/media?tmdb_id=${id}`)
-        .then((r) => (r.ok ? r.json() : Promise.reject()))
-        .then((d) => {
-          const intro = (d.intro || [])[0];
+      const tmdbId = this.mediaId.split('/')[1];
+      fetch(`https://api.theintrodb.org/v2/media?tmdb_id=${tmdbId}`)
+        .then((response) => (response.ok ? response.json() : Promise.reject()))
+        .then((data) => {
+          const intro = (data.intro || [])[0];
           if (intro && intro.end_ms) this._intro = intro;
         })
         .catch(() => {});
@@ -889,16 +889,16 @@ const Player = (() => {
       this._subtitle = url ? { url, label: label || '' } : null; // feeds the Download button
       // TextTracks aren't DOM children and can't be removed via removeChild, so
       // clear + hide every existing track (cues) so they never stack with the new one.
-      [...(this.video.textTracks || [])].forEach((t) => {
-        t.mode = 'hidden';
-        const cues = t.cues;
+      [...(this.video.textTracks || [])].forEach((existing) => {
+        existing.mode = 'hidden';
+        const cues = existing.cues;
         if (cues) for (let i = cues.length - 1; i >= 0; i--) cues.remove(cues[i]);
       });
       this._subTrack = null;
       this._subBaseCues = null; // new file → fresh raw cues, reset the fps guess
       this._subScale = 1;
       if (!url) {
-        [...(this.video.textTracks || [])].forEach((t) => (t.mode = 'hidden'));
+        [...(this.video.textTracks || [])].forEach((existing) => (existing.mode = 'hidden'));
         return;
       }
       const track = this.video.addTextTrack('subtitles', label || 'Subtitle', 'en');
@@ -917,19 +917,19 @@ const Player = (() => {
         : signedSubUrl(url, ref, src && src.origin).catch(() => playableUrl(url, ref, src && src.origin));
       Promise.resolve(subFetchUrl)
         .then((fetchUrl) => fetch(fetchUrl))
-        .then((r) => (r.ok ? r.text() : Promise.reject(new Error('subtitle fetch failed'))))
+        .then((response) => (response.ok ? response.text() : Promise.reject(new Error('subtitle fetch failed'))))
         .then((text) => {
           const vtt = isSrt(url) ? srtToVtt(text) : text;
           // stash the RAW cue times — offset/scale are applied in _addSubCues
           // so sync tweaks re-render instantly without refetching the file
-          this._subBaseCues = parseVtt(vtt).map((c) => ({ start: c.startTime, end: c.endTime, text: c.text }));
+          this._subBaseCues = parseVtt(vtt).map((parsed) => ({ start: parsed.startTime, end: parsed.endTime, text: parsed.text }));
           this._addSubCues(track);
           this._maybeAutoSync();
-          [...(this.video.textTracks || [])].forEach((t) => (t !== track ? (t.mode = 'hidden') : null));
+          [...(this.video.textTracks || [])].forEach((other) => (other !== track ? (other.mode = 'hidden') : null));
           track.mode = 'showing';
         })
-        .catch((e) => {
-          console.warn('subtitle:', e.message);
+        .catch((error) => {
+          console.warn('subtitle:', error.message);
           this._failedSubs.add(url); // never auto-pick this track again
           this.shell.dispatchEvent(new CustomEvent('subtitle-error', { detail: { label: label || '' } }));
         });
@@ -966,11 +966,11 @@ const Player = (() => {
     _addSubCues(track) {
       if (!track || !this._subBaseCues) return;
       if (track.cues) for (let i = track.cues.length - 1; i >= 0; i--) track.cues[i].remove();
-      const off = this._subOffset || 0;
-      const scale = this._subScale || 1;
-      for (const c of this._subBaseCues) {
+      const offset = this._subOffset || 0;
+      const timeScale = this._subScale || 1;
+      for (const baseCue of this._subBaseCues) {
         try {
-          track.addCue(new VTTCue(Math.max(0, c.start * scale + off), Math.max(0.05, c.end * scale + off), c.text));
+          track.addCue(new VTTCue(Math.max(0, baseCue.start * timeScale + offset), Math.max(0.05, baseCue.end * timeScale + offset), baseCue.text));
         } catch (e) {}
       }
     }
@@ -985,13 +985,13 @@ const Player = (() => {
      */
     _maybeAutoSync() {
       if (this._subAutoDone || !this._subBaseCues || !this._subBaseCues.length) return;
-      const d = this.video.duration;
-      if (!Number.isFinite(d) || d < 600) return; // need a real runtime to judge
-      const last = this._subBaseCues[this._subBaseCues.length - 1].end;
-      if (!(last > d)) return;
-      const ratio = last / d;
-      const KNOWN = [25 / 23.976, 24 / 23.976, 25 / 24, 29.97 / 23.976, 30 / 23.976, 50 / 23.976];
-      const hit = KNOWN.find((r) => Math.abs(ratio - r) / r < 0.015);
+      const duration = this.video.duration;
+      if (!Number.isFinite(duration) || duration < 600) return; // need a real runtime to judge
+      const lastCueEnd = this._subBaseCues[this._subBaseCues.length - 1].end;
+      if (!(lastCueEnd > duration)) return;
+      const ratio = lastCueEnd / duration;
+      const KNOWN_RATIOS = [25 / 23.976, 24 / 23.976, 25 / 24, 29.97 / 23.976, 30 / 23.976, 50 / 23.976];
+      const hit = KNOWN_RATIOS.find((known) => Math.abs(ratio - known) / known < 0.015);
       if (!hit) return;
       this._subScale = 1 / hit;
       this._subAutoDone = true;
@@ -1010,8 +1010,8 @@ const Player = (() => {
     }
 
     /** True if a subtitle on this server is (or contains) English. */
-    _isEnglishSub(s) {
-      return /english|\beng\b|\ben\b|\beng subs?\b/i.test(`${s.label || ''} ${s.lang || ''}`);
+    _isEnglishSub(track) {
+      return /english|\beng\b|\ben\b|\beng subs?\b/i.test(`${track.label || ''} ${track.lang || ''}`);
     }
 
     /**
@@ -1023,13 +1023,13 @@ const Player = (() => {
      */
     autoSubtitle() {
       // skip tracks that already failed to load this session — never re-pick one
-      const subs = (this.subtitles || []).filter((s) => !(this._failedSubs && this._failedSubs.has(s.url)));
+      const subs = (this.subtitles || []).filter((track) => !(this._failedSubs && this._failedSubs.has(track.url)));
       if (!subs.length) return null;
       const pref = localStorage.getItem('cinephile-subtitle') || '';
       if (pref === 'off') return null;
-      const kept = pref ? subs.find((s) => s.label === pref) : null;
+      const kept = pref ? subs.find((track) => track.label === pref) : null;
       if (kept) return kept;
-      return subs.find((s) => this._isEnglishSub(s)) || subs[0];
+      return subs.find((track) => this._isEnglishSub(track)) || subs[0];
     }
 
     /**
@@ -1038,9 +1038,9 @@ const Player = (() => {
      */
     _checkUpNext() {
       if (!this.nextEpisodeId || this._upNextShown) return;
-      const d = this.video.duration;
-      if (!Number.isFinite(d) || !d) return;
-      const remaining = d - this.video.currentTime;
+      const duration = this.video.duration;
+      if (!Number.isFinite(duration) || !duration) return;
+      const remaining = duration - this.video.currentTime;
       if (remaining > 0 && remaining <= UP_NEXT_WINDOW_S) {
         this._upNextShown = true;
         this.shell.dispatchEvent(new CustomEvent('up-next'));
@@ -1058,11 +1058,11 @@ const Player = (() => {
       const end = (this._intro.end_ms || 0) / 1000;
       if (this.video.currentTime >= Math.max(0, end - 8) && this.video.currentTime < end) {
         this._introFired = true;
-        const btn = this.shell.querySelector('.skip-intro');
-        btn.classList.add('show');
-        btn.onclick = () => {
+        const skipBtn = this.shell.querySelector('.skip-intro');
+        skipBtn.classList.add('show');
+        skipBtn.onclick = () => {
           this.video.currentTime = end;
-          btn.classList.remove('show');
+          skipBtn.classList.remove('show');
         };
       }
     }
@@ -1077,9 +1077,9 @@ const Player = (() => {
     }
     showError(msg) {
       this.hideLoading();
-      const el = this.shell.querySelector('.player-error');
-      el.hidden = false;
-      el.querySelector('.pe-msg').textContent = msg;
+      const errorBox = this.shell.querySelector('.player-error');
+      errorBox.hidden = false;
+      errorBox.querySelector('.pe-msg').textContent = msg;
     }
   }
 

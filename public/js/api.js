@@ -37,72 +37,72 @@ const API = (() => {
   const PIN_TTL = 24 * 60 * 60 * 1000;
 
   function bases() {
-    const same = (typeof location !== 'undefined' && location.origin) || '';
-    const direct = [same, ...MIRRORS.filter((m) => m !== same)].filter(Boolean);
-    const list = [API_PROXY, ...direct.filter((b) => b !== API_PROXY)];
+    const sameOrigin = (typeof location !== 'undefined' && location.origin) || '';
+    const direct = [sameOrigin, ...MIRRORS.filter((mirror) => mirror !== sameOrigin)].filter(Boolean);
+    const list = [API_PROXY, ...direct.filter((base) => base !== API_PROXY)];
     let pinned = '';
     try {
-      const raw = localStorage.getItem(PIN_KEY);
-      if (raw) {
-        const { base, ts } = JSON.parse(raw);
-        if (base && Date.now() - ts < PIN_TTL) pinned = base;
+      const stored = localStorage.getItem(PIN_KEY);
+      if (stored) {
+        const { base, savedAt } = JSON.parse(stored);
+        if (base && Date.now() - savedAt < PIN_TTL) pinned = base;
       }
     } catch {}
-    if (pinned && pinned !== list[0]) return [pinned, ...list.filter((b) => b !== pinned)];
+    if (pinned && pinned !== list[0]) return [pinned, ...list.filter((base) => base !== pinned)];
     return list;
   }
 
   function pin(base) {
     try {
-      localStorage.setItem(PIN_KEY, JSON.stringify({ base, ts: Date.now() }));
+      localStorage.setItem(PIN_KEY, JSON.stringify({ base, savedAt: Date.now() }));
     } catch {}
   }
 
   async function get(path, opts = {}) {
     const signal = opts.signal;
-    let lastErr = null;
+    let lastError = null;
     for (const base of bases()) {
       if (signal && signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      let res;
+      let response;
       try {
-        res = await fetch(base + path, signal ? { signal } : {});
-      } catch (e) {
-        if (signal && signal.aborted) throw e; // typed-ahead — never fail over
-        lastErr = e; // network down / backend dead -> try next mirror
+        response = await fetch(base + path, signal ? { signal } : {});
+      } catch (error) {
+        if (signal && signal.aborted) throw error; // typed-ahead — never fail over
+        lastError = error; // network down / backend dead -> try next mirror
         continue;
       }
-      if (res.ok) {
+      if (response.ok) {
         pin(base);
-        return res.json();
+        return response.json();
       }
       // 429/5xx may succeed on the mirror; 4xx will fail everywhere — stop.
-      if (res.status !== 429 && res.status < 500) {
-        let msg = `HTTP ${res.status}`;
+      if (response.status !== 429 && response.status < 500) {
+        let message = `HTTP ${response.status}`;
         try {
-          const j = await res.json();
-          if (j.error) msg = j.error;
+          const body = await response.json();
+          if (body.error) message = body.error;
         } catch (e) {}
-        throw new Error(msg);
+        throw new Error(message);
       }
       try {
-        const j = await res.json();
-        lastErr = new Error((j && j.error) || `HTTP ${res.status}`);
+        const body = await response.json();
+        lastError = new Error((body && body.error) || `HTTP ${response.status}`);
       } catch (e) {
-        lastErr = new Error(`HTTP ${res.status}`);
+        lastError = new Error(`HTTP ${response.status}`);
       }
     }
-    throw lastErr || new Error('All API backends failed');
+    throw lastError || new Error('All API backends failed');
   }
 
   return {
     get,
-    search: (q, page = 1) => get(`/search?query=${encodeURIComponent(q)}&page=${page}`),
+    search: (query, page = 1) => get(`/search?query=${encodeURIComponent(query)}&page=${page}`),
     info: (mediaId) => get(`/info/${mediaId}`),
     sources: (mediaId, episodeId = '1-1', server = null, skip = []) => {
-      const p = new URLSearchParams({ mediaId });
-      if (server) p.set('server', server);
-      if (skip && skip.length) p.set('skip', skip.join(','));
-      return get(`/sources/${episodeId}?${p}`);
+      const params = new URLSearchParams({ mediaId });
+      if (server) params.set('server', server);
+      if (skip && skip.length) params.set('skip', skip.join(','));
+      return get(`/sources/${episodeId}?${params}`);
     },
     // subtitle tracks — fired in parallel with sources(); result attaches late
     subtitles: (mediaId, episodeId = '1-1') =>

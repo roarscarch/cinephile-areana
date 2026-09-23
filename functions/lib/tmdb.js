@@ -13,11 +13,11 @@ const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS];
 
 function withDeadline(promise, ms) {
-  let t;
-  const cap = new Promise((resolve) => {
-    t = setTimeout(() => resolve([]), ms);
+  let timeoutId;
+  const fallback = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve([]), ms);
   });
-  return Promise.race([promise, cap]).finally(() => clearTimeout(t));
+  return Promise.race([promise, fallback]).finally(() => clearTimeout(timeoutId));
 }
 
 const SUB_VALID_CACHE = new Map();
@@ -33,45 +33,45 @@ export class CinephileHQ {
   }
 
   async tmdbGet(path, params = {}, timeout = 12000) {
-    const q = new URLSearchParams({ api_key: this.env.TMDB_API_KEY, ...params });
+    const query = new URLSearchParams({ api_key: this.env.TMDB_API_KEY, ...params });
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeout);
+    const timeoutId = setTimeout(() => ctrl.abort(), timeout);
     try {
-      const r = await fetch(`${TMDB_BASE}${path}?${q}`, { signal: ctrl.signal });
-      if (!r.ok) {
-        const e = new Error(`TMDB ${r.status}`);
-        e.status = r.status;
-        throw e;
+      const response = await fetch(`${TMDB_BASE}${path}?${query}`, { signal: ctrl.signal });
+      if (!response.ok) {
+        const error = new Error(`TMDB ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
-      return await r.json();
+      return await response.json();
     } finally {
-      clearTimeout(t);
+      clearTimeout(timeoutId);
     }
   }
 
-  _cached(key, ttlMs, fn) {
+  _cached(key, ttlMs, fetcher) {
     const now = Date.now();
     const hit = this._cache.get(key);
     if (hit) {
       if (hit.exp > now) return hit.promise;
       this._cache.delete(key);
     }
-    const p = Promise.resolve()
-      .then(fn)
-      .then((v) => {
-        this._cache.set(key, { exp: Date.now() + ttlMs, promise: Promise.resolve(v) });
-        return v;
+    const pending = Promise.resolve()
+      .then(fetcher)
+      .then((value) => {
+        this._cache.set(key, { exp: Date.now() + ttlMs, promise: Promise.resolve(value) });
+        return value;
       })
-      .catch((e) => {
+      .catch((error) => {
         this._cache.delete(key);
-        throw e;
+        throw error;
       });
-    this._cache.set(key, { exp: now + ttlMs, promise: p });
+    this._cache.set(key, { exp: now + ttlMs, promise: pending });
     if (this._cache.size > 600) {
-      const t = Date.now();
-      for (const [k, v] of this._cache) if (v.exp < t) this._cache.delete(k);
+      const sweepNow = Date.now();
+      for (const [cacheKey, entry] of this._cache) if (entry.exp < sweepNow) this._cache.delete(cacheKey);
     }
-    return p;
+    return pending;
   }
 
   _imdbId(type, id) {
@@ -123,7 +123,7 @@ export class CinephileHQ {
       return {
         currentPage: data.page,
         hasNextPage: data.page < data.total_pages,
-        results: data.results.map((r) => this._item(type, r, type)),
+        results: data.results.map((row) => this._item(type, row, type)),
       };
     });
   }
@@ -133,7 +133,7 @@ export class CinephileHQ {
       const data = await this.tmdbGet('/search/multi', { query, page, include_adult: 'false' });
       const results = data.results
         .filter((r) => r.media_type === 'movie' || r.media_type === 'tv')
-        .map((r) => this._item(r.media_type, r, r.media_type));
+        .map((row) => this._item(row.media_type, row, row.media_type));
       return { currentPage: data.page, hasNextPage: data.page < data.total_pages, results };
     });
   }
@@ -164,14 +164,14 @@ export class CinephileHQ {
         rating: data.vote_average || 0,
         recommendations: ((data.recommendations && data.recommendations.results) || [])
           .slice(0, 12)
-          .map((r) => this._item(type, r, type)),
+          .map((row) => this._item(type, row, type)),
       };
       if (type === 'tv') {
         const seasonCount = Math.min(data.number_of_seasons || 0, 10);
         const seasonResults = await Promise.all(
           Array.from({ length: seasonCount }, (_, i) =>
             this.tmdbGet(`/tv/${id}/season/${i + 1}`)
-              .then((r) => r.episodes || [])
+              .then((season) => season.episodes || [])
               .catch(() => null)
           )
         );
@@ -196,7 +196,7 @@ export class CinephileHQ {
   }
 
   async fetchEpisodeServers() {
-    return SERVERS.map((s) => ({ name: s.name }));
+    return SERVERS.map((server) => ({ name: server.name }));
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {
@@ -226,44 +226,44 @@ export class CinephileHQ {
   }
 
   _mergeSubtitles(osSubs, subs, vsubs) {
-    const isEn = (s) => /english|\beng\b|\ben\b/i.test(`${s.label || ''} ${s.lang || ''}`);
-    const builtIn = [...subs, ...vsubs].filter(isEn);
+    const isEnglish = (track) => /english|\beng\b|\ben\b/i.test(`${track.label || ''} ${track.lang || ''}`);
+    const builtIn = [...subs, ...vsubs].filter(isEnglish);
     const merged = [...osSubs, ...builtIn];
     const seen = new Set();
-    return merged.filter((s) => {
-      const k = s.label || s.lang || 'unknown';
-      if (seen.has(k)) return false;
-      seen.add(k);
+    return merged.filter((track) => {
+      const dedupeKey = track.label || track.lang || 'unknown';
+      if (seen.has(dedupeKey)) return false;
+      seen.add(dedupeKey);
       return true;
     });
   }
 
   async _validateSubtitles(subs) {
-    const check = async (s) => {
-      const cached = SUB_VALID_CACHE.get(s.url);
-      if (cached && Date.now() - cached.ts < SUB_VALID_TTL) return cached.ok ? s : null;
+    const check = async (track) => {
+      const cached = SUB_VALID_CACHE.get(track.url);
+      if (cached && Date.now() - cached.ts < SUB_VALID_TTL) return cached.ok ? track : null;
       try {
         let head;
-        if (s.url.startsWith('/subtitles/subdl?')) {
+        if (track.url.startsWith('/subtitles/subdl?')) {
           // Local route — resolve in-process instead of HTTP loopback.
-          const q = new URLSearchParams(s.url.split('?')[1]);
-          head = (await fetchSubdlVtt(this.env, q.get('zip'), q.get('ep'))).slice(0, 4000);
+          const query = new URLSearchParams(track.url.split('?')[1]);
+          head = (await fetchSubdlVtt(this.env, query.get('zip'), query.get('ep'))).slice(0, 4000);
         } else {
           const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 5000);
+          const timeoutId = setTimeout(() => ctrl.abort(), 5000);
           try {
-            const r = await fetch(s.url, { signal: ctrl.signal });
-            if (!r.ok) return null;
-            head = (await r.text()).slice(0, 4000);
+            const response = await fetch(track.url, { signal: ctrl.signal });
+            if (!response.ok) return null;
+            head = (await response.text()).slice(0, 4000);
           } finally {
-            clearTimeout(t);
+            clearTimeout(timeoutId);
           }
         }
         const ok = /^WEBVTT/m.test(head) || /-->/m.test(head);
-        SUB_VALID_CACHE.set(s.url, { ok, ts: Date.now() });
-        return ok ? s : null;
+        SUB_VALID_CACHE.set(track.url, { ok, ts: Date.now() });
+        return ok ? track : null;
       } catch {
-        SUB_VALID_CACHE.set(s.url, { ok: false, ts: Date.now() });
+        SUB_VALID_CACHE.set(track.url, { ok: false, ts: Date.now() });
         return null;
       }
     };
@@ -287,10 +287,10 @@ export class CinephileHQ {
     const { type, id, season, episode } = this._parseMedia(episodeId, mediaId);
     const stream = await resolveStream(this.env, { type, id, season, episode, server, skip });
     const sources = [];
-    for (const s of stream.sources || []) {
+    for (const source of stream.sources || []) {
       sources.push({
-        ...s,
-        play: (await signPlayUrl(this.env, { url: s.url, referer: s.referer, origin: s.origin })) || undefined,
+        ...source,
+        play: (await signPlayUrl(this.env, { url: source.url, referer: source.referer, origin: source.origin })) || undefined,
       });
     }
     // NOTE: no embedUrl — the old myflixerfree.to referral links were unused
@@ -305,12 +305,12 @@ export class CinephileHQ {
   }
 
   async fetchMovieEmbedLinks(movieId, serverName = null) {
-    const servers = serverName ? SERVERS.filter((s) => s.name === serverName) : SERVERS;
+    const servers = serverName ? SERVERS.filter((server) => server.name === serverName) : SERVERS;
     const results = [];
-    for (const s of servers) {
+    for (const server of servers) {
       try {
-        const stream = await resolveStream(this.env, { type: 'movie', id: movieId, server: s.name });
-        results.push({ server: s.name, url: (stream.sources[0] && stream.sources[0].url) || null, isM3U8: stream.sources[0] ? !!stream.sources[0].isM3U8 : false });
+        const stream = await resolveStream(this.env, { type: 'movie', id: movieId, server: server.name });
+        results.push({ server: server.name, url: (stream.sources[0] && stream.sources[0].url) || null, isM3U8: stream.sources[0] ? !!stream.sources[0].isM3U8 : false });
       } catch {}
     }
     return { id: movieId, sources: results };
@@ -322,12 +322,12 @@ export class CinephileHQ {
     const m = se.match(/^(\d+)-(\d+)$/);
     if (!m) throw new Error('episodeId must be tvId:s{e} e.g. 1396:1-3');
     const [, season, episode] = m;
-    const servers = serverName ? SERVERS.filter((s) => s.name === serverName) : SERVERS;
+    const servers = serverName ? SERVERS.filter((server) => server.name === serverName) : SERVERS;
     const results = [];
-    for (const s of servers) {
+    for (const server of servers) {
       try {
-        const stream = await resolveStream(this.env, { type: 'tv', id: tvId, season, episode, server: s.name });
-        results.push({ server: s.name, url: (stream.sources[0] && stream.sources[0].url) || null, isM3U8: stream.sources[0] ? !!stream.sources[0].isM3U8 : false });
+        const stream = await resolveStream(this.env, { type: 'tv', id: tvId, season, episode, server: server.name });
+        results.push({ server: server.name, url: (stream.sources[0] && stream.sources[0].url) || null, isM3U8: stream.sources[0] ? !!stream.sources[0].isM3U8 : false });
       } catch {}
     }
     return { id: episodeId, sources: results };
@@ -355,8 +355,8 @@ export class CinephileHQ {
     await Promise.all(
       ['iron', 'multi'].map(async (server) => {
         try {
-          const res = await resolveStream(this.env, { type, id, season, episode, server });
-          out[server] = [...new Set(res.sources.map((s) => s.dub).filter(Boolean))];
+          const stream = await resolveStream(this.env, { type, id, season, episode, server });
+          out[server] = [...new Set(stream.sources.map((source) => source.dub).filter(Boolean))];
         } catch {
           out[server] = [];
         }
@@ -368,28 +368,28 @@ export class CinephileHQ {
   async fetchRecentMovies() {
     return this._cached('recent:movies', 10 * 60 * 1000, async () => {
       const data = await this.tmdbGet('/movie/now_playing');
-      return data.results.slice(0, 20).map((r) => this._item('movie', r, 'movie'));
+      return data.results.slice(0, 20).map((row) => this._item('movie', row, 'movie'));
     });
   }
 
   async fetchRecentTvShows() {
     return this._cached('recent:tv', 10 * 60 * 1000, async () => {
       const data = await this.tmdbGet('/tv/on_the_air');
-      return data.results.slice(0, 20).map((r) => this._item('tv', r, 'tv'));
+      return data.results.slice(0, 20).map((row) => this._item('tv', row, 'tv'));
     });
   }
 
   async fetchTrendingMovies() {
     return this._cached('trending:movies', 10 * 60 * 1000, async () => {
       const data = await this.tmdbGet('/trending/movie/week');
-      return data.results.slice(0, 20).map((r) => this._item('movie', r, 'movie'));
+      return data.results.slice(0, 20).map((row) => this._item('movie', row, 'movie'));
     });
   }
 
   async fetchTrendingTvShows() {
     return this._cached('trending:tv', 10 * 60 * 1000, async () => {
       const data = await this.tmdbGet('/trending/tv/week');
-      return data.results.slice(0, 20).map((r) => this._item('tv', r, 'tv'));
+      return data.results.slice(0, 20).map((row) => this._item('tv', row, 'tv'));
     });
   }
 

@@ -96,12 +96,12 @@ export async function signPlayUrl(env, { url, referer, origin }) {
   const msg = `${url}\n${ref}\n${org}\n${exp}`;
   const ck = await crypto.subtle.importKey('raw', new TextEncoder().encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const sig = hexEncode(new Uint8Array(await crypto.subtle.sign('HMAC', ck, new TextEncoder().encode(msg))));
-  const p = new URLSearchParams({ ref });
-  if (org) p.set('origin', org);
-  p.set('url', url);
-  p.set('exp', String(exp));
-  p.set('sig', sig);
-  return `${base}/play?${p.toString()}`;
+  const params = new URLSearchParams({ ref });
+  if (org) params.set('origin', org);
+  params.set('url', url);
+  params.set('exp', String(exp));
+  params.set('sig', sig);
+  return `${base}/play?${params.toString()}`;
 }
 
 // ---- fetch helpers (axios-shaped errors carry .status) ----
@@ -169,12 +169,12 @@ export async function fetchSubtitles(env, type, id, season, episode) {
       timeout: 3000,
     });
     const subs = (Array.isArray(raw) ? raw : [])
-      .map((s) => ({
-        url: s.url || s.file || s.src,
-        label: s.label || s.language || s.lang || 'Unknown',
-        lang: s.lang || s.language || null,
+      .map((rawSub) => ({
+        url: rawSub.url || rawSub.file || rawSub.src,
+        label: rawSub.label || rawSub.language || rawSub.lang || 'Unknown',
+        lang: rawSub.lang || rawSub.language || null,
       }))
-      .filter((s) => s.url);
+      .filter((sub) => sub.url);
     subsCache.set(key, subs);
     return subs;
   } catch {
@@ -184,14 +184,14 @@ export async function fetchSubtitles(env, type, id, season, episode) {
 
 // ---- vidnest ----
 export function vidnestDecode(data, alphabet) {
-  const l = [...String(data)].map((c) => alphabet.indexOf(c));
+  const codes = [...String(data)].map((c) => alphabet.indexOf(c));
   const bytes = [];
-  for (let o = 0; o + 3 < l.length; o += 4) {
-    const a = l[o], b = l[o + 1], c = l[o + 2], d = l[o + 3];
-    if (a < 0 || a > 63) break;
-    bytes.push((a << 2) | (b >> 4));
-    if (c !== 64) bytes.push(((b & 15) << 4) | (c >> 2));
-    if (d !== 64) bytes.push(((c & 3) << 6) | d);
+  for (let offset = 0; offset + 3 < codes.length; offset += 4) {
+    const n0 = codes[offset], n1 = codes[offset + 1], n2 = codes[offset + 2], n3 = codes[offset + 3];
+    if (n0 < 0 || n0 > 63) break;
+    bytes.push((n0 << 2) | (n1 >> 4));
+    if (n2 !== 64) bytes.push(((n1 & 15) << 4) | (n2 >> 2));
+    if (n3 !== 64) bytes.push(((n2 & 3) << 6) | n3);
   }
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
@@ -218,19 +218,19 @@ export function vidnestToResult(provider, data) {
     ? data.streams
     : [{ url: data.url, type: data.hls, headers: data.headers, referer: data.referer, label: data.label }];
   const sources = items
-    .map((s) => {
-      const url = s.url || s.file;
+    .map((stream) => {
+      const url = stream.url || stream.file;
       if (!url) return null;
       return {
         url,
-        quality: s.quality || s.resolution || s.label || 'auto',
+        quality: stream.quality || stream.resolution || stream.label || 'auto',
         isM3U8:
-          s.type === 'hls' ||
+          stream.type === 'hls' ||
           /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(url) ||
           /master\.txt($|\?)|\.txt($|\?)/i.test(url),
-        headers: s.headers || null,
-        referer: (s.headers && s.headers.Referer) || s.referer || null,
-        lang: s.language || null,
+        headers: stream.headers || null,
+        referer: (stream.headers && stream.headers.Referer) || stream.referer || null,
+        lang: stream.language || null,
       };
     })
     .filter(Boolean);
@@ -240,31 +240,32 @@ export function vidnestToResult(provider, data) {
 async function resolveVidnest(env, { type, id, season, episode, server }) {
   if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
   if (server) {
-    const p = VIDNEST_PROVIDERS.find((x) => x.name === String(server).toLowerCase());
-    if (!p) throw new Error(`Unknown vidnest provider '${server}'`);
-    return vidnestToResult(p, await fetchVidnestProvider(env, p, type, id, season, episode));
+    const provider = VIDNEST_PROVIDERS.find((candidate) => candidate.name === String(server).toLowerCase());
+    if (!provider) throw new Error(`Unknown vidnest provider '${server}'`);
+    return vidnestToResult(provider, await fetchVidnestProvider(provider, type, id, season, episode));
   }
   const key = titleKey(type, id, season, episode);
-  const cached = vidnestCache.get(key);
-  const baseOrder = cached
-    ? [cached, ...VIDNEST_PROVIDERS.filter((p) => p.name !== cached.name)]
+  const cachedName = vidnestCache.get(key);
+  const cachedProvider = cachedName && VIDNEST_PROVIDERS.find((candidate) => candidate.name === cachedName);
+  const baseOrder = cachedProvider
+    ? [cachedProvider, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedProvider.name)]
     : VIDNEST_PROVIDERS;
-  const order = baseOrder.filter((p) => !isDead('vidnest', p, key));
+  const order = baseOrder.filter((provider) => !isDead('vidnest', provider, key));
   let lastError = null;
   const settled = await Promise.allSettled(
-    order.map((p) => fetchVidnestProvider(env, p, type, id, season, episode).then((d) => vidnestToResult(p, d)))
+    order.map((provider) => fetchVidnestProvider(env, provider, type, id, season, episode).then((payload) => vidnestToResult(provider, payload)))
   );
   for (let i = 0; i < order.length; i++) {
-    const p = order[i];
-    const s = settled[i];
-    if (s.status === 'rejected') {
-      lastError = s.reason;
-      markDead('vidnest', p, key);
+    const provider = order[i];
+    const outcome = settled[i];
+    if (outcome.status === 'rejected') {
+      lastError = outcome.reason;
+      markDead('vidnest', provider, key);
       continue;
     }
-    if (!s.value.sources.length) continue;
-    vidnestCache.set(key, p.name);
-    return s.value;
+    if (!outcome.value.sources.length) continue;
+    vidnestCache.set(key, provider.name);
+    return outcome.value;
   }
   throw new Error(`No vidnest source found${lastError ? ` (${lastError.message})` : ''}`);
 }
@@ -281,8 +282,8 @@ export async function fetchVidnestSubtitles(type, id, season, episode) {
       const r = await fetch(url, { signal: ctrl.signal });
       const list = r.ok ? await r.json() : [];
       const subs = (Array.isArray(list) ? list : [])
-        .map((s) => ({ url: s.file || s.url, label: s.label, lang: s.label || null }))
-        .filter((s) => s.url);
+        .map((rawSub) => ({ url: rawSub.file || rawSub.url, label: rawSub.label, lang: rawSub.label || null }))
+        .filter((sub) => sub.url);
       vdrkSubsCache.set(key, subs);
       return subs;
     } finally {
@@ -325,64 +326,64 @@ async function probeStreamPlayable(src) {
 }
 
 // ---- auto race: first startable stream wins ----
-async function autoRace(env, pOrder, vOrder, key, opts) {
-  const cand = [];
-  for (const p of pOrder) cand.push(['peachify', p]);
-  for (const p of vOrder) cand.push(['vidnest', p]);
+async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
+  const candidates = [];
+  for (const provider of peachifyOrder) candidates.push(['peachify', provider]);
+  for (const provider of vidnestOrder) candidates.push(['vidnest', provider]);
   return await new Promise((resolve) => {
-    let left = cand.length;
-    if (!left) return resolve({ won: false, lastErr: {} });
-    let done = false;
-    const lastErr = {};
-    const fails = { peachify: 0, vidnest: 0 };
-    const totals = { peachify: pOrder.length, vidnest: vOrder.length };
-    const finish = (out) => {
-      if (!done) {
-        done = true;
-        resolve(out);
+    let remaining = candidates.length;
+    if (!remaining) return resolve({ won: false, lastErr: {} });
+    let finished = false;
+    const lastErrors = {};
+    const failCounts = { peachify: 0, vidnest: 0 };
+    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length };
+    const finish = (outcome) => {
+      if (!finished) {
+        finished = true;
+        resolve(outcome);
       }
     };
-    for (const [fam, p] of cand) {
-      (fam === 'peachify'
-        ? fetchProvider(env, p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
-            toResult(p, d)
+    for (const [family, provider] of candidates) {
+      (family === 'peachify'
+        ? fetchProvider(env, provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+            toResult(provider, payload)
           )
-        : fetchVidnestProvider(env, p, opts.type, opts.id, opts.season, opts.episode).then((d) =>
-            vidnestToResult(p, d)
+        : fetchVidnestProvider(env, provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+            vidnestToResult(provider, payload)
           )
       )
         .then((result) => {
-          healFamily(fam);
-          return { ok: true, fam, p, result };
+          healFamily(family);
+          return { ok: true, family, provider, result };
         })
-        .catch((e) => {
-          markDead(fam, p, key);
-          fails[fam]++;
-          lastErr[fam] = e && e.message;
-          if (fails[fam] === totals[fam]) familyDeadUntil.set(fam, Date.now() + FAMILY_TTL_MS);
+        .catch((error) => {
+          markDead(family, provider, key);
+          failCounts[family]++;
+          lastErrors[family] = error && error.message;
+          if (failCounts[family] === familySizes[family]) familyDeadUntil.set(family, Date.now() + FAMILY_TTL_MS);
           return { ok: false };
         })
-        .then(async (r) => {
+        .then(async (outcome) => {
           try {
-            if (r.ok && r.result.sources.length && !done) {
-              const scKey = `${r.fam}:${r.p.name}:${key}`;
-              let playable = (streamOkCache.get(scKey) || 0) > Date.now();
+            if (outcome.ok && outcome.result.sources.length && !finished) {
+              const probeCacheKey = `${outcome.family}:${outcome.provider.name}:${key}`;
+              let playable = (streamOkCache.get(probeCacheKey) || 0) > Date.now();
               if (!playable) {
-                playable = await probeStreamPlayable(r.result.sources[0]);
-                if (playable) streamOkCache.set(scKey, Date.now() + STREAM_OK_TTL_MS);
+                playable = await probeStreamPlayable(outcome.result.sources[0]);
+                if (playable) streamOkCache.set(probeCacheKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
-                (r.fam === 'peachify' ? providerCache : vidnestCache).set(key, r.p.name);
-                return finish({ won: true, result: r.result });
+                (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
+                return finish({ won: true, result: outcome.result });
               }
-              markDead(r.fam, r.p, key);
-              fails[r.fam]++;
-              lastErr[r.fam] = `${r.p.name}: stream not startable`;
-              if (fails[r.fam] === totals[r.fam]) familyDeadUntil.set(r.fam, Date.now() + FAMILY_TTL_MS);
+              markDead(outcome.family, outcome.provider, key);
+              failCounts[outcome.family]++;
+              lastErrors[outcome.family] = `${outcome.provider.name}: stream not startable`;
+              if (failCounts[outcome.family] === familySizes[outcome.family]) familyDeadUntil.set(outcome.family, Date.now() + FAMILY_TTL_MS);
             }
           } finally {
-            left--;
-            if (!left && !done) finish({ won: false, lastErr });
+            remaining--;
+            if (!remaining && !finished) finish({ won: false, lastErr: lastErrors });
           }
         });
     }
@@ -395,40 +396,42 @@ export async function resolveStream(env, { type, id, season, episode, server, sk
   if (!env.VIDNEST_ALPHABET) throw new Error('VIDNEST_ALPHABET env required');
   if (server) {
     const name = String(server).toLowerCase();
-    const vid = VIDNEST_PROVIDERS.find((x) => x.name === name);
-    if (vid) return resolveVidnest(env, { type, id, season, episode, server: name });
-    const p = PROVIDERS.find((x) => x.name === name || x.path === name);
-    if (!p) throw new Error(`Unknown provider '${server}'`);
-    const data = await fetchProvider(env, p, type, id, season, episode);
-    return toResult(p, data);
+    const vidnestProvider = VIDNEST_PROVIDERS.find((candidate) => candidate.name === name);
+    if (vidnestProvider) return resolveVidnest(env, { type, id, season, episode, server: name });
+    const provider = PROVIDERS.find((candidate) => candidate.name === name || candidate.path === name);
+    if (!provider) throw new Error(`Unknown provider '${server}'`);
+    const data = await fetchProvider(env, provider, type, id, season, episode);
+    return toResult(provider, data);
   }
   const key = titleKey(type, id, season, episode);
-  const pc = providerCache.get(key);
-  const skipSet = new Set((skip || []).map((s) => String(s).toLowerCase()));
-  const pOrder = (pc ? [pc, ...PROVIDERS.filter((p) => p.name !== pc.name)] : PROVIDERS).filter(
-    (p) => !skipSet.has(p.name) && !familyDown('peachify') && !isDead('peachify', p, key)
+  const cachedPeachifyName = providerCache.get(key);
+  const cachedPeachify = cachedPeachifyName && PROVIDERS.find((candidate) => candidate.name === cachedPeachifyName);
+  const skipSet = new Set((skip || []).map((name) => String(name).toLowerCase()));
+  const peachifyOrder = (cachedPeachify ? [cachedPeachify, ...PROVIDERS.filter((provider) => provider.name !== cachedPeachify.name)] : PROVIDERS).filter(
+    (provider) => !skipSet.has(provider.name) && !familyDown('peachify') && !isDead('peachify', provider, key)
   );
-  const vc = vidnestCache.get(key);
-  const vOrder = (vc ? [vc, ...VIDNEST_PROVIDERS.filter((p) => p.name !== vc.name)] : VIDNEST_PROVIDERS).filter(
-    (p) => !skipSet.has(p.name) && !familyDown('vidnest') && !isDead('vidnest', p, key)
+  const cachedVidnestName = vidnestCache.get(key);
+  const cachedVidnest = cachedVidnestName && VIDNEST_PROVIDERS.find((candidate) => candidate.name === cachedVidnestName);
+  const vidnestOrder = (cachedVidnest ? [cachedVidnest, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedVidnest.name)] : VIDNEST_PROVIDERS).filter(
+    (provider) => !skipSet.has(provider.name) && !familyDown('vidnest') && !isDead('vidnest', provider, key)
   );
-  const out = await autoRace(env, pOrder, vOrder, key, { type, id, season, episode });
-  if (out.won) return out.result;
+  const outcome = await autoRace(env, peachifyOrder, vidnestOrder, key, { type, id, season, episode });
+  if (outcome.won) return outcome.result;
   return { provider: null, sources: [], subtitles: [] };
 }
 
 function unwrapProxies(src) {
   if (!src || !src.url || !/\/(?:m3u8|mp4)-proxy/.test(src.url)) return src;
   try {
-    const u = new URL(src.url);
-    const real = u.searchParams.get('url');
-    if (!real) return src;
+    const proxyUrl = new URL(src.url);
+    const targetUrl = proxyUrl.searchParams.get('url');
+    if (!targetUrl) return src;
     let headers = null;
     try {
-      const h = JSON.parse(u.searchParams.get('headers') || '{}');
-      headers = { ...(h.origin ? { Origin: h.origin } : {}), ...(h.referer ? { Referer: h.referer } : {}) };
+      const embedded = JSON.parse(proxyUrl.searchParams.get('headers') || '{}');
+      headers = { ...(embedded.origin ? { Origin: embedded.origin } : {}), ...(embedded.referer ? { Referer: embedded.referer } : {}) };
     } catch {}
-    return { ...src, url: real, headers };
+    return { ...src, url: targetUrl, headers };
   } catch {
     return src;
   }
@@ -436,9 +439,9 @@ function unwrapProxies(src) {
 
 export function toResult(provider, data) {
   const sources = (data.sources || [])
-    .map((s) => {
-      const unwrapped = unwrapProxies(s);
-      const h = unwrapped.headers || {};
+    .map((rawSource) => {
+      const unwrapped = unwrapProxies(rawSource);
+      const rawHeaders = unwrapped.headers || {};
       return {
         url: unwrapped.url || unwrapped.src || unwrapped.file,
         quality: unwrapped.quality || unwrapped.resolution || unwrapped.height || 'auto',
@@ -448,19 +451,19 @@ export function toResult(provider, data) {
           /\.m3u8($|\?)|m3u8-proxy|streamsvr|\/hls\d*\//i.test(unwrapped.url || '') ||
           /master\.txt($|\?)|\.txt($|\?)/i.test(unwrapped.url || ''),
         headers: unwrapped.headers || null,
-        referer: h.Referer || h.referer || null,
-        origin: h.Origin || h.origin || null,
+        referer: rawHeaders.Referer || rawHeaders.referer || null,
+        origin: rawHeaders.Origin || rawHeaders.origin || null,
       };
     })
-    .filter((s) => s.url);
+    .filter((source) => source.url);
   const subtitles = (data.subtitles || [])
-    .map((s) => ({
-      url: s.url || s.file || s.src,
-      label: s.label || s.language || s.lang || 'Unknown',
-      lang: s.lang || s.language || null,
-      format: s.format || null,
-      encoding: s.encoding || null,
+    .map((rawSub) => ({
+      url: rawSub.url || rawSub.file || rawSub.src,
+      label: rawSub.label || rawSub.language || rawSub.lang || 'Unknown',
+      lang: rawSub.lang || rawSub.language || null,
+      format: rawSub.format || null,
+      encoding: rawSub.encoding || null,
     }))
-    .filter((s) => s.url);
+    .filter((sub) => sub.url);
   return { provider: provider.name, sources, subtitles };
 }

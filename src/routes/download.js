@@ -29,10 +29,10 @@ module.exports = function downloadRoutes() {
       .slice(0, 80) || 'cinephiles-download';
     const tracks = String(subs || '')
       .split(',')
-      .map((t, i) => {
-        const [u, ...rest] = t.split('|');
-        if (!u || !/^https?:\/\//i.test(u)) return null;
-        return { url: u, label: rest.join('|').slice(0, 60) || `Subtitle ${i + 1}` };
+      .map((pair, index) => {
+        const [trackUrl, ...rest] = pair.split('|');
+        if (!trackUrl || !/^https?:\/\//i.test(trackUrl)) return null;
+        return { url: trackUrl, label: rest.join('|').slice(0, 60) || `Subtitle ${index + 1}` };
       })
       .filter(Boolean)
       .slice(0, 12); // cap the track count — no point muxing 50 languages
@@ -47,14 +47,14 @@ module.exports = function downloadRoutes() {
     if (!remux) {
       // direct source, no subs: stream through like /play, flagged as a download
       fetch(url, { headers: { Referer: referer, 'User-Agent': STREAM_UA } })
-        .then((up) => {
-          if (!up.ok && up.status !== 206) return res.status(up.status).json({ error: `Upstream ${up.status}` });
-          res.set('Content-Type', up.headers.get('content-type') || 'application/octet-stream');
-          const cl = up.headers.get('content-length');
-          if (cl) res.set('Content-Length', cl);
+        .then((upstream) => {
+          if (!upstream.ok && upstream.status !== 206) return res.status(upstream.status).json({ error: `Upstream ${upstream.status}` });
+          res.set('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
+          const contentLength = upstream.headers.get('content-length');
+          if (contentLength) res.set('Content-Length', contentLength);
           return new Promise((resolve, reject) => {
-            const body = Readable.fromWeb(up.body);
-            body.on('error', (e) => {
+            const body = Readable.fromWeb(upstream.body);
+            body.on('error', (streamError) => {
               res.destroy();
               reject(e);
             });
@@ -72,13 +72,13 @@ module.exports = function downloadRoutes() {
     const headers = `Referer: ${referer}\r\nUser-Agent: ${STREAM_UA}\r\n`;
     const buildArgs = (includeSubs) => {
       const args = ['-hide_banner', '-loglevel', 'error', '-headers', headers, '-i', url];
-      if (includeSubs) for (const t of tracks) args.push('-i', t.url);
+      if (includeSubs) for (const track of tracks) args.push('-i', track.url);
       args.push('-map', '0:v:0', '-map', '0:a?');
-      if (includeSubs) tracks.forEach((_, i) => args.push('-map', `${i + 1}:0`));
+      if (includeSubs) tracks.forEach((_, index) => args.push('-map', `${index + 1}:0`));
       args.push('-c:v', 'copy', '-c:a', hls === '1' ? 'aac' : 'copy');
       if (includeSubs) {
         args.push('-c:s', 'mov_text');
-        tracks.forEach((t, i) => args.push(`-metadata:s:s:${i}`, `title=${t.label}`));
+        tracks.forEach((track, index) => args.push(`-metadata:s:s:${index}`, `title=${track.label}`));
       }
       args.push('-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', 'pipe:1');
       return args;
@@ -86,24 +86,24 @@ module.exports = function downloadRoutes() {
 
     let stderr = '';
     let aborted = false;
-    let ff = null;
+    let ffmpegProc = null;
 
     const start = (includeSubs) => {
-      ff = spawn('ffmpeg', buildArgs(includeSubs), { stdio: ['ignore', 'pipe', 'pipe'] });
+      ffmpegProc = spawn('ffmpeg', buildArgs(includeSubs), { stdio: ['ignore', 'pipe', 'pipe'] });
       stderr = '';
-      ff.stderr.on('data', (d) => (stderr = (stderr + d).slice(-2048)));
-      ff.stdout.on('error', () => {});
-      ff.on('error', (e) => {
+      ffmpegProc.stderr.on('data', (chunk) => (stderr = (stderr + chunk).slice(-2048)));
+      ffmpegProc.stdout.on('error', () => {});
+      ffmpegProc.on('error', (spawnError) => {
         // ENOENT = ffmpeg not installed
         if (res.headersSent) return;
-        res.status(e.code === 'ENOENT' ? 503 : 502).json({
+        res.status(spawnError.code === 'ENOENT' ? 503 : 502).json({
           error:
-            e.code === 'ENOENT'
+            spawnError.code === 'ENOENT'
               ? 'ffmpeg is not installed on this server — downloads with subtitles need it (sudo apt install ffmpeg)'
-              : `ffmpeg failed to start: ${e.message}`,
+              : `ffmpeg failed to start: ${spawnError.message}`,
         });
       });
-      ff.on('close', (code) => {
+      ffmpegProc.on('close', (code) => {
         if (aborted) return;
         if (res.headersSent) return res.end();
         // failed before producing output: if subtitle inputs were involved,
@@ -111,12 +111,12 @@ module.exports = function downloadRoutes() {
         if (includeSubs) return start(false);
         res.status(502).json({ error: `ffmpeg exited before producing output (code ${code}): ${stderr.slice(-400)}` });
       });
-      ff.stdout.pipe(res);
+      ffmpegProc.stdout.pipe(res);
     };
 
     res.on('close', () => {
       aborted = true;
-      if (ff && !ff.killed) ff.kill();
+      if (ffmpegProc && !ffmpegProc.killed) ffmpegProc.kill();
     });
     start(tracks.length > 0);
   });
