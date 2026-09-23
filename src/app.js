@@ -221,6 +221,11 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// 5b. Tight cap for /sign (it mints Worker passes — 60 per IP per window is
+// plenty for subtitle picks, useless for bulk hotlink minting).
+const signLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 60 });
+app.use('/sign', signLimiter);
+
 // 6. Request logging
 app.use((req, res, next) => {
   if (process.env.NODE_ENV !== 'test') {

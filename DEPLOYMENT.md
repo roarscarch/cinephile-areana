@@ -103,6 +103,36 @@ instead of zlib). The frontend needs no changes: `api.js` is same-origin and
 `sync-env.sh` copies only the secret keys from `.env.local` — never
 `VERCEL_OIDC_TOKEN`.
 
+## Hotlink protection (signed play URLs + rate cap)
+
+`/play` URLs carry `exp` (2h expiry) + `sig` (HMAC-SHA256 over
+`url + ref + origin + exp`) so the Worker can tell our players apart from
+hotlinkers. Media URLs are signed server-side in `/sources`; subtitle tracks
+are signed on demand via same-origin `GET /sign?url=&ref=` (their referer is
+only known client-side). The Worker also caps each IP at 4000 req/10 min.
+
+Setup (all three deployments share one key):
+
+```bash
+openssl rand -hex 32   # -> PLAY_SIGNING_KEY
+```
+
+- Worker: `wrangler secret put PLAY_SIGNING_KEY` (in `worker/`)
+- Pages: `wrangler pages secret put PLAY_SIGNING_KEY --project-name=cinephile-areana`
+  (or add to `.env.local` and re-run `sync-env.sh`), then redeploy
+- Vercel: env var `PLAY_SIGNING_KEY` on each project, then redeploy
+
+Rollout is two-phase (Worker default is warn mode — serves everything, tags
+responses with `X-Sig-Status: ok|missing|expired|bad-sig`):
+
+1. Deploy everything with the key set. Players (v20+) use signed URLs;
+   watch `X-Sig-Status` — when `missing` disappears, all clients migrated.
+2. Flip enforcement: set Worker env `REQUIRE_SIGNED=1` (`wrangler secret put
+   REQUIRE_SIGNED` + redeploy worker). Unsigned requests then get 403.
+
+Extra origins for `/sign` via `ALLOW_ORIGINS="a.com,b.com"` (defaults cover
+both Vercel projects + Pages + localhost).
+
 ## Cloudflare token permissions
 
 Create at Dashboard -> My Profile -> API Tokens -> **Edit Cloudflare Workers**

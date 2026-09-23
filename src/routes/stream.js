@@ -7,6 +7,12 @@
 // CORS-open and skip this.
 const { Router } = require('express');
 const { Readable } = require('stream');
+// Lazy: extractor throws at import when cipher keys are unset (tests, key-less
+// boots). Guard works unsigned until keys exist.
+let signPlayUrl = null;
+try {
+  ({ signPlayUrl } = require('../services/extractor'));
+} catch {}
 
 // High-performance O(1) LRU cache for proxied media segments.
 // HLS fragments (2-10s video, 0.5-4MB) hit memory on seek-back instead of upstream.
@@ -204,9 +210,15 @@ module.exports = function streamRoutes() {
     // Option A guard: when PLAY_PROXY_BASE is set (Vercel), don't proxy bytes
     // here — 302 to the Cloudflare Worker so stale clients (cached player.js)
     // burn zero Fast Origin Transfer. Costs one tiny redirect, no video bytes.
-    // Local dev / VPS leave it unset and proxy as before.
+    // The redirect is signed when PLAY_SIGNING_KEY is set (Worker enforce
+    // mode); otherwise a plain redirect (local dev / pre-key deploys).
+    // Local dev / VPS leave PLAY_PROXY_BASE unset and proxy as before.
     const proxyBase = (process.env.PLAY_PROXY_BASE || '').replace(/\/$/, '');
     if (proxyBase) {
+      const { url, ref, origin } = req.query;
+      const signed =
+        url && signPlayUrl && signPlayUrl({ url, referer: ref, origin });
+      if (signed) return res.redirect(302, signed);
       return res.redirect(302, `${proxyBase}${req.originalUrl}`);
     }
 

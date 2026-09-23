@@ -58,16 +58,42 @@ const VIDNEST_ALPHABET = process.env.VIDNEST_ALPHABET;
 if (!VIDNEST_ALPHABET) throw new Error("VIDNEST_ALPHABET env required (see private secrets repo)");
 
 const VIDNEST_PROVIDERS = [
+  // Direct-first: exact-arrival ties in the auto race resolve to the earliest
+  // registered provider, so historically CORS-open (browser-direct, zero proxy
+  // cost) providers go first. Relay/gated hosts (proxy-burning) go last.
+  { name: 'buzz' },                      // 97bf1.com — CORS-open, direct
+  { name: 'vidxyz' },                    // sparkvid relay — CORS-open, direct
+  { name: 'ngc', slug: 'nextgencloudfabric' }, // remoteconsultinggroup — ACAO *, direct
   { name: 'videasy' },                     // tiktoks.animanga.fun relay — movie + tv
   { name: 'hollymoviehd' },                // direct mp4/hls streams, per-stream referers
   { name: 'rogflix' },                     // akcloud.animanga.fun relay
-  { name: 'buzz' },                        // direct m3u8 + expiring token
-  { name: 'ngc', slug: 'nextgencloudfabric' },
-  { name: 'vidxyz' },                      // sparkvid workers relay (shape 2) — revived 2026-08
 ];
 
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
+const PLAY_PROXY_DEFAULT = 'https://flixerz-play.cinephilia-areana.workers.dev';
+const PLAY_SIG_TTL_S = 2 * 3600; // signed play URLs live 2h (tokenized CDNs expire faster anyway)
+
+// Sign a proxy URL so the Worker can tell our players apart from hotlinkers.
+// Returns null when PLAY_SIGNING_KEY is unset (player falls back to unsigned;
+// Worker warn-mode still serves those until REQUIRE_SIGNED=1).
+function signPlayUrl({ url, referer, origin }) {
+  const key = process.env.PLAY_SIGNING_KEY;
+  if (!key || !url) return null;
+  const base = (process.env.PLAY_PROXY_BASE || PLAY_PROXY_DEFAULT).replace(/\/$/, '');
+  const ref = referer || PEACHIFY_REFERER;
+  const org = origin || '';
+  const exp = Math.floor(Date.now() / 1000) + PLAY_SIG_TTL_S;
+  const msg = `${url}\n${ref}\n${org}\n${exp}`;
+  const sig = crypto.createHmac('sha256', key).update(msg, 'utf8').digest('hex');
+  const p = new URLSearchParams({ ref });
+  if (org) p.set('origin', org);
+  p.set('url', url);
+  p.set('exp', String(exp));
+  p.set('sig', sig);
+  return `${base}/play?${p.toString()}`;
+}
 
 const b64url = (s) => Buffer.from(String(s).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
 
@@ -595,6 +621,8 @@ module.exports = {
   VIDNEST_PROVIDERS,
   PEACHIFY_KEY_HEX,
   PEACHIFY_API,
+  signPlayUrl,
+  PLAY_SIG_TTL_S,
   // internals — exported for the test suite (tests/extractor.test.js)
   decryptPayload,
   vidnestDecode,

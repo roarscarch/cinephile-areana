@@ -5,7 +5,7 @@
 //   _validateSubtitles loopback via 127.0.0.1 -> direct fetchSubdlVtt() call
 //   env comes from constructor (Pages/Workers bindings), not process.env
 
-import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS } from './ex.js';
+import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, signPlayUrl } from './ex.js';
 import { fetchEnglishSubtitles, fetchSubdlVtt } from './subs.js';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
@@ -295,10 +295,17 @@ export class FlixHQ {
   async _episodeSources(episodeId, mediaId, server = null, skip = []) {
     const { type, id, season, episode } = this._parseMedia(episodeId, mediaId);
     const stream = await resolveStream(this.env, { type, id, season, episode, server, skip });
+    const sources = [];
+    for (const s of stream.sources || []) {
+      sources.push({
+        ...s,
+        play: (await signPlayUrl(this.env, { url: s.url, referer: s.referer, origin: s.origin })) || undefined,
+      });
+    }
     const embedUrl = this._playerUrl(type, id, '', season, episode);
     return {
       headers: { Referer: 'https://peachify.top/' },
-      sources: stream.sources,
+      sources,
       subtitles: [],
       provider: stream.provider,
       server: stream.provider,

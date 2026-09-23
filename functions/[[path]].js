@@ -11,6 +11,28 @@
 
 import { FlixHQ } from './lib/flix.js';
 import { fetchSubdlVtt } from './lib/subs.js';
+import { signPlayUrl } from './lib/ex.js';
+
+function signOrigins(env) {
+  return new Set(
+    String(env.ALLOW_ORIGINS || 'cinephilia-vercel.vercel.app,cinephiles-areana.vercel.app,cinephile-areana.pages.dev,localhost,127.0.0.1')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+  );
+}
+function signOriginAllowed(env, request) {
+  const o = request.headers.get('Origin');
+  if (!o) return true;
+  try {
+    const h = new URL(o).hostname.toLowerCase();
+    const set = signOrigins(env);
+    if (set.has(h)) return true;
+    return [...set].some((d) => d !== 'localhost' && d !== '127.0.0.1' && (h === d || h.endsWith('.' + d)));
+  } catch {
+    return false;
+  }
+}
 
 const PLAY_WORKER_DEFAULT = 'https://flixerz-play.cinephilia-areana.workers.dev';
 const DOWNLOAD_FALLBACK_DEFAULT = 'https://cinephilia-vercel.vercel.app';
@@ -75,6 +97,18 @@ export async function onRequest({ request, env, params, next, waitUntil }) {
     // ---- health ----
     if (seg.length === 1 && a === 'health') {
       return json({ ok: true, edge: 'cinephile-areana', ts: Date.now() });
+    }
+
+    // ---- sign: mint a signed proxy URL (subtitle tracks; same-origin only,
+    // no ACAO header). No strict per-IP cap here — Pages has no durable
+    // counters; the 2h expiry + origin check carry the protection.
+    if (a === 'sign' && seg.length === 1) {
+      if (!signOriginAllowed(env, request)) return err('Forbidden origin', 403);
+      const target = q.get('url');
+      if (!target || !/^https?:\/\//i.test(target)) return err('Valid url required', 400);
+      const play = await signPlayUrl(env, { url: target, referer: q.get('ref'), origin: q.get('origin') });
+      if (!play) return err('Signing not configured', 503);
+      return json({ play });
     }
 
     // ---- /play: video bytes live on the dedicated Worker, never here ----

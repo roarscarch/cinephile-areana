@@ -51,10 +51,35 @@ const Player = (() => {
     // them directly. /play only proxies absolute http(s) URLs and would 400.
     if (url.startsWith('/')) return url;
     if (isDirect(url, src)) return url;
+    // Server-issued signed URL (from /sources): proves to the Worker this
+    // request came from our player. Falls back to unsigned below.
+    if (src && src.play) return src.play;
     const params = new URLSearchParams({ ref: referer || 'https://peachify.top/' });
     if (origin) params.set('origin', origin);
     params.set('url', url);
     return `${PLAY_PROXY_BASE}/play?${params.toString()}`;
+  }
+
+  // Signed subtitle fetch URLs, minted on demand via same-origin GET /sign
+  // (their referer is only known here, at pick time). Cached ~100 min.
+  const subSignCache = new Map(); // `${url}\n${ref}` -> { play, exp }
+  async function signedSubUrl(url, referer, origin) {
+    if (url.startsWith('/')) return url;
+    if (isDirect(url, null)) return url;
+    const ref = referer || 'https://peachify.top/';
+    const key = `${url}\n${ref}`;
+    const hit = subSignCache.get(key);
+    if (hit && hit.exp > Date.now() + 5 * 60 * 1000) return hit.play;
+    const p = new URLSearchParams({ url });
+    p.set('ref', ref);
+    if (origin) p.set('origin', origin);
+    const r = await fetch(`/sign?${p.toString()}`);
+    if (!r.ok) throw new Error(`sign ${r.status}`);
+    const { play } = await r.json();
+    if (!play) throw new Error('sign empty');
+    if (subSignCache.size > 200) subSignCache.clear();
+    subSignCache.set(key, { play, exp: Date.now() + 100 * 60 * 1000 });
+    return play;
   }
 
   function pickBest(sources) {
@@ -64,7 +89,16 @@ const Player = (() => {
         const v = parseInt(s.quality || '0', 10);
         return Number.isFinite(v) ? v : 0;
       };
-      return q(b) - q(a) || (b.isM3U8 ? 1 : 0) - (a.isM3U8 ? 1 : 0);
+      // Quality first; among equal quality prefer browser-direct sources
+      // (zero proxy cost) over proxied ones; HLS last as before.
+      const dir = (s) => {
+        try {
+          return isDirect(s.url, s) ? 1 : 0;
+        } catch {
+          return 0;
+        }
+      };
+      return q(b) - q(a) || dir(b) - dir(a) || (b.isM3U8 ? 1 : 0) - (a.isM3U8 ? 1 : 0);
     });
     return ranked[0];
   }
@@ -718,10 +752,15 @@ const Player = (() => {
       // Subs often live on a CDN that wants the stream's Referer (and no CORS),
       // so fetch them through /play like the media — using the CURRENT source's
       // referer, not the default. This is what makes "subtitles are there but
-      // won't show" actually display.
+      // won't show" actually display. Gated tracks use a server-minted signed
+      // URL (via /sign); direct/local tracks fetch as before.
       const src = this._currentSource || (this.sources && this.sources[0]);
       const ref = src && src.referer;
-      fetch(playableUrl(url, ref, src && src.origin))
+      const subFetchUrl = (url.startsWith('/') || isDirect(url, null))
+        ? Promise.resolve(playableUrl(url, ref, src && src.origin))
+        : signedSubUrl(url, ref, src && src.origin).catch(() => playableUrl(url, ref, src && src.origin));
+      Promise.resolve(subFetchUrl)
+        .then((fetchUrl) => fetch(fetchUrl))
         .then((r) => (r.ok ? r.text() : Promise.reject(new Error('subtitle fetch failed'))))
         .then((text) => {
           const vtt = isSrt(url) ? srtToVtt(text) : text;

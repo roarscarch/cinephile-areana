@@ -15,6 +15,62 @@ const PLAYLIST_MAX_BYTES = 4 * 1024 * 1024;
 const PLAYLIST_TTL_S = 300; // 5 min — tokens renew hourly
 const SEGMENT_TTL_S = 300;
 
+// ---- hotlink protection ----
+// Signed URLs (minted by /sources and /sign, HMAC-SHA256 over
+// url\nref\norigin\nexp) prove the request came from our players.
+// REQUIRE_SIGNED=1 -> reject unsigned/invalid (403). Default 0 -> warn
+// mode (X-Sig-Status header, still served) for rollout.
+const SIG_SKEW_S = 300;
+function hexToBytes(hex) {
+  const h = String(hex || '').trim();
+  if (!/^[0-9a-fA-F]+$/.test(h) || h.length % 2) return null;
+  const out = new Uint8Array(h.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(h.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+async function sigStatus(env, target, referer, origin, exp, sig) {
+  if (!env.PLAY_SIGNING_KEY) return 'no-key';
+  if (!exp || !sig) return 'missing';
+  const now = Math.floor(Date.now() / 1000);
+  if (!/^\d+$/.test(exp) || Number(exp) < now - SIG_SKEW_S) return 'expired';
+  const msg = `${target}\n${referer || ''}\n${origin || ''}\n${exp}`;
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(env.PLAY_SIGNING_KEY),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    const sigBytes = hexToBytes(sig);
+    if (!sigBytes || sigBytes.length !== 32) return 'bad-sig';
+    const ok = await crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(msg));
+    return ok ? 'ok' : 'bad-sig';
+  } catch {
+    return 'bad-sig';
+  }
+}
+
+// ---- per-IP rate cap (best-effort, per-isolate): 4000 req / 10 min.
+// A 2h movie is ~800-1200 requests; this allows 3 concurrent streams with
+// headroom while stopping bulk leeching. Exceed -> 429.
+const RATE_MAX = 4000;
+const RATE_WINDOW_MS = 10 * 60 * 1000;
+const rateBuckets = new Map(); // ip -> { count, reset }
+function rateLimited(ip) {
+  const now = Date.now();
+  if (rateBuckets.size > 5000) {
+    for (const [k, v] of rateBuckets) if (v.reset < now) rateBuckets.delete(k);
+  }
+  let b = rateBuckets.get(ip);
+  if (!b || b.reset < now) {
+    b = { count: 0, reset: now + RATE_WINDOW_MS };
+    rateBuckets.set(ip, b);
+  }
+  b.count++;
+  return b.count > RATE_MAX;
+}
+
 function looksLikePlaylistBytes(buf) {
   if (!buf || !buf.length) return false;
   let s = new TextDecoder().decode(buf.subarray(0, 512));
@@ -24,13 +80,19 @@ function looksLikePlaylistBytes(buf) {
 
 // Rewrite every media URL in a playlist to ride this Worker.
 // workerOrigin = e.g. https://flixerz-play.xxx.workers.dev
-function rewritePlaylist(text, playlistUrl, referer, origin, workerOrigin) {
+// auth = { exp, sig } inherited from the parent request so child segment
+// fetches pass signature enforcement too (same 2h window).
+function rewritePlaylist(text, playlistUrl, referer, origin, workerOrigin, auth = null) {
   const toPlay = (u) => {
     try {
       const abs = new URL(u, playlistUrl).href;
       const params = new URLSearchParams({ ref: referer });
       if (origin) params.set('origin', origin);
       params.set('url', abs);
+      if (auth && auth.exp && auth.sig) {
+        params.set('exp', auth.exp);
+        params.set('sig', auth.sig);
+      }
       return `${workerOrigin}/play?${params.toString()}`;
     } catch {
       return null;
@@ -95,6 +157,8 @@ export default {
     const target = url.searchParams.get('url');
     const referer = url.searchParams.get('ref') || 'https://peachify.top/';
     const origin = url.searchParams.get('origin') || '';
+    const exp = url.searchParams.get('exp') || '';
+    const sig = url.searchParams.get('sig') || '';
     if (!target) {
       return new Response(JSON.stringify({ error: 'url query parameter is required' }), {
         status: 400,
@@ -107,6 +171,30 @@ export default {
         headers: { 'Content-Type': 'application/json', ...corsHeaders() },
       });
     }
+
+    // Rate cap first (cheapest), then signature.
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    if (rateLimited(ip)) {
+      return new Response(JSON.stringify({ error: 'Rate limited — slow down' }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+      });
+    }
+    const sigState = await sigStatus(env, target, url.searchParams.get('ref') || '', origin, exp, sig);
+    if (env.REQUIRE_SIGNED === '1' && sigState !== 'ok') {
+      return new Response(JSON.stringify({ error: `Forbidden (${sigState})` }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders() },
+      });
+    }
+    // Rollout observability: every served response carries the verdict.
+    const mark = (res) => {
+      try {
+        res.headers.set('X-Sig-Status', sigState);
+      } catch {}
+      return res;
+    };
+    const childAuth = exp && sig ? { exp, sig } : null;
 
     const cache = caches.default;
     const range = request.headers.get('Range');
@@ -144,13 +232,15 @@ export default {
       // 2a. Header says playlist — rewrite, cache, serve.
       if (ct.includes('mpegurl') || ct.includes('m3u8')) {
         const text = await upstream.text();
-        const rewritten = rewritePlaylist(text, target, referer, origin, workerOrigin);
-        const res = new Response(rewritten, {
-          headers: corsHeaders({
-            'Content-Type': 'application/vnd.apple.mpegurl',
-            'Cache-Control': `public, max-age=${PLAYLIST_TTL_S}`,
-          }),
-        });
+        const rewritten = rewritePlaylist(text, target, referer, origin, workerOrigin, childAuth);
+        const res = mark(
+          new Response(rewritten, {
+            headers: corsHeaders({
+              'Content-Type': 'application/vnd.apple.mpegurl',
+              'Cache-Control': `public, max-age=${PLAYLIST_TTL_S}`,
+            }),
+          })
+        );
         if (request.method === 'GET') {
           // caches.default requires a cloned request/response pair; fire-and-forget
           try {
@@ -170,7 +260,7 @@ export default {
         if (cl) headers.set('Content-Length', cl);
         const cr = upstream.headers.get('content-range');
         if (cr) headers.set('Content-Range', cr);
-        return new Response(upstream.body, { status: upstream.status, headers });
+        return mark(new Response(upstream.body, { status: upstream.status, headers }));
       }
 
       // 2c. Ambiguous small body — header lies sometimes (text/html masters
@@ -182,7 +272,8 @@ export default {
           target,
           referer,
           origin,
-          workerOrigin
+          workerOrigin,
+          childAuth
         );
         const res = new Response(rewritten, {
           headers: corsHeaders({
@@ -190,6 +281,7 @@ export default {
             'Cache-Control': `public, max-age=${PLAYLIST_TTL_S}`,
           }),
         });
+        mark(res);
         if (request.method === 'GET') {
           try {
             await cache.put(request, res.clone());
@@ -205,7 +297,7 @@ export default {
       if (buf.length <= PLAYLIST_MAX_BYTES) {
         headers.set('Cache-Control', `public, max-age=${SEGMENT_TTL_S}`);
       }
-      const res = new Response(buf, { status: upstream.status, headers });
+      const res = mark(new Response(buf, { status: upstream.status, headers }));
       if (request.method === 'GET' && buf.length <= PLAYLIST_MAX_BYTES && buf.length > 0) {
         try {
           await cache.put(request, res.clone());

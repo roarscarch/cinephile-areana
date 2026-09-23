@@ -1,8 +1,49 @@
-// src/routes/media.js — /search, /info, /sources, /subtitles, /servers, /dubs
+// src/routes/media.js — /search, /info, /sources, /subtitles, /servers, /dubs, /sign
 const { Router } = require('express');
+const { signPlayUrl } = require('../services/extractor');
+
+// Hosts allowed to mint signatures (same-origin callers). The browser
+// enforces this via CORS (no ACAO header below); the Origin check closes
+// the curl-with-Origin hole. Extra hosts via ALLOW_ORIGINS="a.com,b.com".
+const SIGN_ORIGINS = new Set(
+  (process.env.ALLOW_ORIGINS ||
+    'cinephilia-vercel.vercel.app,cinephiles-areana.vercel.app,cinephile-areana.pages.dev,localhost,127.0.0.1'
+  )
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean)
+);
+
+function signOriginAllowed(req) {
+  const o = req.headers.origin;
+  if (!o) return true; // same-origin navigations / no-Origin clients
+  try {
+    const h = new URL(o).hostname.toLowerCase();
+    if (SIGN_ORIGINS.has(h)) return true;
+    return [...SIGN_ORIGINS].some((d) => d !== 'localhost' && d !== '127.0.0.1' && (h === d || h.endsWith('.' + d)));
+  } catch {
+    return false;
+  }
+}
 
 module.exports = function mediaRoutes(tmdb) {
   const router = Router();
+
+  // Mint a signed proxy URL for an arbitrary media/subtitle URL. Used by the
+  // player for subtitle tracks (their referer is only known client-side).
+  // Same-origin CORS only — NO Access-Control-Allow-Origin header here.
+  router.get('/sign', async (req, res) => {
+    try {
+      if (!signOriginAllowed(req)) return res.status(403).json({ error: 'Forbidden origin' });
+      const { url, ref, origin } = req.query;
+      if (!url || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Valid url required' });
+      const play = signPlayUrl({ url, referer: ref, origin });
+      if (!play) return res.status(503).json({ error: 'Signing not configured' });
+      res.json({ play });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
 
   // Search endpoint
   router.get('/search', async (req, res) => {

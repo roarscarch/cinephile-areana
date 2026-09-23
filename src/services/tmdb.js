@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { TvType } = require('../utils/constants');
-const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS } = require('./extractor');
+const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, signPlayUrl } = require('./extractor');
 const { fetchEnglishSubtitles } = require('./subtitles'); // primary English subtitle source
 const { httpAgent, httpsAgent } = require('../utils/http');
 
@@ -325,7 +325,11 @@ class FlixHQ {
       withDeadline(fetchVidnestSubtitles(type, id, season, episode), budgetMs),
       imdbId ? withDeadline(fetchEnglishSubtitles({ type, imdbId, season, episode }), budgetMs) : [],
     ]);
-    return this._validateSubtitles(this._mergeSubtitles(osSubs, subs, vsubs));
+    const valid = await this._validateSubtitles(this._mergeSubtitles(osSubs, subs, vsubs));
+    // NOTE: no pre-signed `play` here — proxied tracks are fetched with the
+    // CURRENT source's referer, known only client-side at pick time. The
+    // player mints those on demand via GET /sign (same-origin CORS).
+    return valid;
   }
 
   async _episodeSources(episodeId, mediaId, server = null, skip = []) {
@@ -337,10 +341,18 @@ class FlixHQ {
     // starts, so even a fully dead subtitle API cannot delay one frame here.
     const stream = await resolveStream({ type, id, season, episode, server, skip });
 
+    // Pre-sign proxy URLs so the Worker can reject hotlinkers. Unsigned
+    // fallback stays working while PLAY_SIGNING_KEY is unset or the Worker
+    // runs in warn mode (REQUIRE_SIGNED!=1).
+    const sources = (stream.sources || []).map((s) => ({
+      ...s,
+      play: signPlayUrl({ url: s.url, referer: s.referer, origin: s.origin }) || undefined,
+    }));
+
     const embedUrl = this._playerUrl(type, id, '', season, episode);
     return {
       headers: { Referer: 'https://peachify.top/' },
-      sources: stream.sources,
+      sources,
       subtitles: [], // intentionally empty — tracks come from /subtitles
       provider: stream.provider,
       server: stream.provider,
