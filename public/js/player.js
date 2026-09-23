@@ -208,6 +208,12 @@ const Player = (() => {
       // (router renders it as a home row; finished titles leave Continue
       // Watching, history remembers everything).
       this.video.addEventListener('play', () => this._logHistory());
+      // Ambient glow theater mode (YouTube-style): throttled frame sampling
+      // paints a blurred mirror behind the player. Display-only canvas ops —
+      // pixels are never read, so cross-origin video never taints anything.
+      if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        this.video.addEventListener('play', () => this._initAmbient(), { once: true });
+      }
       this.shell.addEventListener('pointerdown', () => this._ensureAudioGraph());
       this.shell.addEventListener('keydown', () => this._ensureAudioGraph());
       this.video.addEventListener('play', () => this.shell.dispatchEvent(new CustomEvent('play-state', { detail: { playing: true } })));
@@ -377,6 +383,33 @@ const Player = (() => {
         localStorage.setItem('cinephile-subsize', s);
       } catch {}
       return s;
+    }
+
+    /**
+     * Ambient glow: every 800 ms paint the current frame (32×18, cheap)
+     * onto a blurred canvas behind the player. Skipped while paused,
+     * hidden, or before any frame exists. Display-only — pixels are never
+     * read, so cross-origin streams are safe.
+     */
+    _initAmbient() {
+      if (this._ambientTimer) return;
+      let canvas = this.shell.querySelector('.ambient-glow');
+      if (!canvas) {
+        canvas = document.createElement('canvas');
+        canvas.className = 'ambient-glow';
+        canvas.width = 32;
+        canvas.height = 18;
+        canvas.setAttribute('aria-hidden', 'true');
+        this.shell.prepend(canvas);
+      }
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      this._ambientTimer = setInterval(() => {
+        try {
+          if (this.video.paused || document.hidden || this.video.readyState < 2) return;
+          if (this.video.videoWidth) ctx.drawImage(this.video, 0, 0, 32, 18);
+        } catch {}
+      }, 800);
     }
 
     load({ mediaId, episodeId = '1-1', title, server = null, image = '' }) {
