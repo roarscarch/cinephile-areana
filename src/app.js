@@ -182,7 +182,59 @@ app.get('/', async (req, res, next) => {
   }
 });
 
-// 4. Static files with caching rules
+// 3b. Shareable watch links: /watch/movie/603 (crawlers don't run JS and
+// never send the #fragment, so hash URLs show no preview). Bots get
+// server-rendered OG/Twitter meta (using the same 10-min memo as SSR);
+// humans 302 to the hash app. Canonical share host for the button:
+// SHARE_ORIGIN env (default: main Vercel URL).
+const SHARE_ORIGIN = (process.env.SHARE_ORIGIN || 'https://cinephilia-vercel.vercel.app').replace(/\/$/, '');
+const BOT_UA = /bot|crawl|spider|slurp|mediapartners|whatsapp|telegram|discord|twitter|facebook|linkedin|embedly|quora|pinterest|slack|skype|viber|line/i;
+const escAttr = (s) =>
+  String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+app.get('/watch/:type/:id/:ep?', async (req, res, next) => {
+  try {
+    const { type, id, ep } = req.params;
+    // TMDB ids are numeric; anything else falls through to the SPA. This
+    // also keeps random-ID bot scrapes from fanning out into TMDB fetches
+    // (this route sits before the rate limiter).
+    if ((type !== 'movie' && type !== 'tv') || !/^\d+$/.test(id || '')) return next();
+    const hash = `#/watch/${type}/${id}${ep ? `/${ep}` : ''}`;
+    if (!BOT_UA.test(String(req.headers['user-agent'] || ''))) {
+      return res.redirect(302, `/${hash}`);
+    }
+    let info = null;
+    try {
+      info = await tmdb.fetchMediaInfo(`${type}/${id}`);
+    } catch (e) {}
+    const title = info ? info.title : type === 'movie' ? 'Movie' : 'TV Show';
+    const desc = info && info.description ? String(info.description).slice(0, 200) : 'Watch free — no ads, no login.';
+    const img = (info && (info.cover || info.image)) || `${SHARE_ORIGIN}/icons/icon.svg`;
+    const pageUrl = `${SHARE_ORIGIN}/watch/${type}/${id}${ep ? `/${ep}` : ''}`;
+    res.set('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400').type('html').send(
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+        `<title>${escAttr(title)} — Cinephiles Areana</title>` +
+        `<meta name="description" content="${escAttr(desc)}">` +
+        `<meta property="og:type" content="video.movie">` +
+        `<meta property="og:site_name" content="Cinephiles Areana">` +
+        `<meta property="og:title" content="${escAttr(title)}">` +
+        `<meta property="og:description" content="${escAttr(desc)}">` +
+        `<meta property="og:image" content="${escAttr(img)}">` +
+        `<meta property="og:url" content="${escAttr(pageUrl)}">` +
+        `<meta name="twitter:card" content="summary_large_image">` +
+        `<meta name="twitter:title" content="${escAttr(title)}">` +
+        `<meta name="twitter:description" content="${escAttr(desc)}">` +
+        `<meta name="twitter:image" content="${escAttr(img)}">` +
+        `<meta http-equiv="refresh" content="0;url=/${escAttr(hash)}">` +
+        `</head><body><a href="/${escAttr(hash)}">Watch ${escAttr(title)}</a></body></html>`
+    );
+  } catch (e) {
+    next();
+  }
+});
 app.use(
   express.static(PUBLIC_DIR, {
     // index.html is still no-cache (see setHeaders): it is the SOURCE OF

@@ -7,6 +7,9 @@
   const searchDropdown = document.getElementById('searchDropdown');
 
   const GENRES = ['Action', 'Adventure', 'Comedy', 'Crime', 'Drama', 'Fantasy', 'Horror', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War'];
+  // Canonical host for share links — always the main site so previews work
+  // even when browsing a mirror (the /watch meta route lives on Vercel).
+  const SHARE_ORIGIN = 'https://cinephilia-vercel.vercel.app';
   // Markup helpers live in render.js — shared with the server's SSR pass so
   // pre-rendered HTML and client-rendered HTML can never drift apart.
   const { card, grid, skeletonRow, rowWithArrows, escapeHtml, homeView } = Render;
@@ -486,6 +489,7 @@
             <p class="detail-desc">${escapeHtml(info.description || 'No description available.')}</p>
             <div class="play-actions">
               <button class="btn btn-primary" id="playBtn">Watch now</button>
+              <button class="btn" id="shareBtn" title="Copy a shareable link with preview">Share</button>
             </div>
           </div>
         </div>
@@ -516,6 +520,28 @@
       } else {
         const ep = episodes[0];
         location.hash = ep ? `#/watch/tv/${id}/${ep.id}` : `#/watch/tv/${id}/1-1`;
+      }
+    });
+
+    // share button → canonical /watch link (server renders OG/Twitter
+    // preview meta for crawlers; humans redirect into the hash app)
+    const shareBtn = view.querySelector('#shareBtn');
+    shareBtn.addEventListener('click', async () => {
+      const link = `${SHARE_ORIGIN}/watch/${mediaId}`;
+      try {
+        if (navigator.share) {
+          await navigator.share({ title: info.title, text: `Watch ${info.title}`, url: link });
+          return;
+        }
+        throw new Error('no-navigator-share');
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // user dismissed the sheet
+        try {
+          await navigator.clipboard.writeText(link);
+          toastMsg('Link copied — paste it anywhere for a rich preview.');
+        } catch (err) {
+          toastMsg(link);
+        }
       }
     });
 
@@ -599,7 +625,7 @@
           </select>
           <span class="subs-sync" id="subSync" hidden>
             <button class="subs-select ctl-btn" id="subSyncMinus" title="Subtitles earlier (shortcut: z)">−</button>
-            <button class="subs-select ctl-btn" id="subSyncVal" title="Subtitle sync — click to reset (shortcuts: z / x)">Sync: 0.0s</button>
+            <button class="subs-select ctl-btn" id="subSyncVal" title="Subtitle sync — click to reset (shortcuts: z / x)">Sync: 0.00s</button>
             <button class="subs-select ctl-btn" id="subSyncPlus" title="Subtitles later (shortcut: x)">+</button>
           </span>
           <button class="subs-select ctl-btn" id="speedBtn" title="Playback speed (shortcuts: > / <)">Speed: 1x</button>
@@ -739,7 +765,7 @@
       if (next) player.loadSubtitle(next.url, next.label);
     });
     // ---- subtitle sync widget: per title+episode timing offset. ±0.5s buttons
-    // here, ±0.1s fine-tune via z/x keys, click the value to reset. Offset is
+    // here, ±0.05s fine-tune via z/x keys, click the value to reset. Offset is
     // re-applied instantly from the stashed raw cues (no refetch) and persisted
     // under 'cinephile-subsync'. The player also auto-corrects fps mismatches.
     const SUB_SYNC_KEY = 'cinephile-subsync';
@@ -752,7 +778,7 @@
     } catch (e) {}
     const showSync = (off) => {
       syncBox.hidden = (player.subtitles || []).length === 0;
-      syncVal.textContent = `Sync: ${off > 0 ? '+' : ''}${Number(off).toFixed(1)}s`;
+      syncVal.textContent = `Sync: ${off > 0 ? '+' : ''}${Number(off).toFixed(2)}s`;
     };
     shell.addEventListener('subtitle-sync', (e) => {
       showSync(e.detail.offset);
@@ -883,6 +909,16 @@
       const nxt = eps[i + 1];
       if (!nxt) return false; // last episode — nothing to offer
       player.setNextEpisode(nxt.id);
+      // Prefetch the NEXT episode's sources once the pre-end window opens:
+      // warms server-side last-known-good/dead-mark caches so clicking Next
+      // resolves near-instantly. Fire-and-forget, once per view.
+      shell.addEventListener(
+        'up-next',
+        () => {
+          if (player.mediaId === mediaId) API.sources(mediaId, nxt.id).catch(() => {});
+        },
+        { once: true }
+      );
       const go = () => { location.hash = `#/watch/${type}/${id}/${nxt.id}`; };
       nextBtn.onclick = go;
       nextChip.onclick = go;

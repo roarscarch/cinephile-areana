@@ -249,12 +249,12 @@ const Player = (() => {
             this.changeSpeed(-0.25);
             e.preventDefault();
             break;
-          case 'z': // subtitle sync: 0.1s earlier
-            this.setSubtitleOffset((this._subOffset || 0) - 0.1);
+          case 'z': // subtitle sync: 0.05s earlier (fine)
+            this.setSubtitleOffset((this._subOffset || 0) - 0.05);
             e.preventDefault();
             break;
-          case 'x': // subtitle sync: 0.1s later
-            this.setSubtitleOffset((this._subOffset || 0) + 0.1);
+          case 'x': // subtitle sync: 0.05s later (fine)
+            this.setSubtitleOffset((this._subOffset || 0) + 0.05);
             e.preventDefault();
             break;
         }
@@ -821,7 +821,7 @@ const Player = (() => {
      * update the UI and persist per title+episode.
      */
     setSubtitleOffset(sec) {
-      this._subOffset = Math.round((Number(sec) || 0) * 10) / 10; // 0.1s resolution
+      this._subOffset = Math.round((Number(sec) || 0) * 20) / 20; // 0.05s resolution
       this._addSubCues(this._subTrack);
       this.shell.dispatchEvent(new CustomEvent('subtitle-sync', { detail: { offset: this._subOffset } }));
     }

@@ -67,10 +67,10 @@
        (browse/search pages skip ~400KB of parsing) -->
   <!-- ?v= busts the service-worker/HTTP caches on release — bump alongside sw.js CACHE -->
   <script src="/js/api.js?v=20"></script>
-  <script src="/js/player.js?v=21"></script>
+  <script src="/js/player.js?v=22"></script>
   <!-- render.js must load before router.js (shared SSR/client markup helpers) -->
   <script src="/js/render.js?v=18"></script>
-  <script src="/js/router.js?v=18"></script>
+  <script src="/js/router.js?v=19"></script>
   <script>
     // PWA: register the service worker (installable app + cached shell)
     if ('serviceWorker' in navigator) {
