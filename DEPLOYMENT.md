@@ -1,0 +1,134 @@
+# Deployment: Vercel + Cloudflare
+
+## Why this setup exists
+
+The app used to stream every video byte through Vercel (`/play` proxy in
+`src/routes/stream.js`). On Vercel Hobby that burns **Fast Origin Transfer**
+(Function -> edge network, 10 GB/month included, resets monthly):
+
+- 1 proxied 1080p movie = ~1.5–2.5 GB origin **and** ~1.5–2.5 GB Fast Data
+  (edge -> user, 100 GB/month). ~5 movies killed the 10 GB quota.
+- Vercel Functions are stateless, so the in-memory segment/playlist cache
+  never hits — every segment re-pays the CDN round-trip.
+- Hobby functions time out at 60 s — long MP4s cut mid-movie.
+
+The fix: video bytes ride Cloudflare (free unmetered bandwidth), Vercel keeps
+only UI + tiny JSON APIs (~15 KB per watch instead of ~1.5 GB — ~100,000x less
+origin). Nothing about the Vercel URL or UX changed.
+
+## Current architecture
+
+```
+Browser (stays on https://cinephilia-vercel.vercel.app)
+ ├─> Vercel: HTML + /search + /info + /sources + /subtitles + /dubs (KBs)
+ ├─> Cloudflare Worker flixerz-play (/play?...): video bytes (GBs, free)
+ │     ├─> CORS-open CDN ─> direct (eat-peach.sbs, 97bf1.com, …)
+ │     └─> Referer-gated CDN ─> Worker injects Referer, rewrites m3u8
+ └─> Vercel /play: 302-redirects to the Worker (guard for stale cached
+     players, set via PLAY_PROXY_BASE env — zero video bytes on Vercel)
+```
+
+Plus a full Cloudflare mirror (no Vercel involved at all):
+
+```
+https://cinephile-areana.pages.dev  (Pages static + Functions API)
+  └─> /play 302 ─> flixerz-play Worker
+  └─> /download 302 ─> Vercel (needs ffmpeg, can't run on Workers)
+```
+
+| Piece | Code | Host | Cost |
+|---|---|---|---|
+| UI + metadata API | repo as-is | Vercel | ~15 KB origin/watch |
+| Stream proxy | `worker/play-proxy.js` | Workers (`flixerz-play`) | free bandwidth, 100k req/day (~125 proxied movies/day; direct plays unlimited) |
+| Full mirror | `public/` + `functions/` | Pages (`cinephile-areana`) | free, unlimited bandwidth |
+
+## Deploy the Worker (video proxy)
+
+```bash
+cd worker
+export CLOUDFLARE_API_TOKEN=<token>     # "Edit Cloudflare Workers" template
+export CLOUDFLARE_ACCOUNT_ID=<account-id> # dashboard right sidebar
+npx wrangler whoami   # sanity check
+npx wrangler deploy   # -> https://flixerz-play.<you>.workers.dev
+unset CLOUDFLARE_API_TOKEN
+```
+
+## Deploy the Pages mirror (full site, optional)
+
+```bash
+cd ~/myflixerz   # repo root (needs public/ + functions/ together)
+npx wrangler pages project create cinephile-areana --production-branch main
+./cloudflare/sync-env.sh cinephile-areana   # copies 3 secrets, nothing else
+npx wrangler pages deploy public --project-name=cinephile-areana --branch main
+# -> https://cinephile-areana.pages.dev
+```
+
+`--branch main` is what promotes the deploy to production (otherwise you only
+get hashed preview URLs). Env vars apply to new deployments only — after
+`secret put`, always redeploy (or `wrangler pages deployment list` + redeploy).
+
+`functions/` is the Express backend ported to Workers runtime (fetch instead
+of axios, WebCrypto AES-GCM instead of Node crypto, `DecompressionStream`
+instead of zlib). The frontend needs no changes: `api.js` is same-origin and
+`player.js` already points at the play Worker.
+
+## Environment variables
+
+| Var | Where | Required | Notes |
+|---|---|---|---|
+| `TMDB_API_KEY` | Vercel + Pages | yes | TMDB read key |
+| `PEACHIFY_KEY_HEX` | Vercel + Pages | yes | 64 hex chars, AES key |
+| `VIDNEST_ALPHABET` | Vercel + Pages | yes | 65-char alphabet |
+| `PLAY_PROXY_BASE` | Vercel only | yes | Worker URL — turns Vercel `/play` into a 302 guard |
+| `SUBDL_API_KEY` etc. | Pages/Vercel | no | OpenSubtitles creds; SubDL has built-in fallback key |
+
+`sync-env.sh` copies only the secret keys from `.env.local` — never
+`VERCEL_OIDC_TOKEN`.
+
+## Cloudflare token permissions
+
+Create at Dashboard -> My Profile -> API Tokens -> **Edit Cloudflare Workers**
+template, then scope it:
+
+- **Account Resources -> Include -> your account.** This is what actually
+  limits the token. Don't leave it on All.
+- **Zone Resources -> Include -> All zones.** `workers.dev`/`pages.dev`
+  deploys use no zone; the form just won't submit without it. Grants nothing
+  extra beyond routes.
+- **Permissions -> leave all defaults.** Wrangler needs Workers Scripts:Edit
+  to deploy, plus Account Settings / User Details / Memberships to auth.
+  Unchecking causes `10000 auth failed`. KV/R2/Pages/Routes/Tail entries are
+  harmless (this project uses Scripts + Pages).
+- **Client IP filtering -> blank** (unless you have a static IP).
+- **TTL -> blank**, then **revoke the token after deploying** (API Tokens ->
+  Delete). Never commit it — it stays in env vars only.
+
+## Vercel side
+
+No token needed: `npx vercel login` (or existing CLI auth) + linked project,
+or connect the GitHub repo (Settings -> Git) so pushes auto-deploy. Set
+`PLAY_PROXY_BASE=https://flixerz-play.<you>.workers.dev` in Project Settings
+-> Environment Variables (Production), then redeploy once.
+
+## Verify
+
+```bash
+curl "https://<your-pages>.pages.dev/health"            # {"ok":true,...}
+curl "https://<your-vercel>.vercel.app/" | grep player.js  # expect ?v=19+
+# /play must 302, never proxy bytes:
+curl -o /dev/null -w "%{http_code} -> %{redirect_url}\n" \
+  "https://<your-vercel>.vercel.app/play?url=https%3A%2F%2Fexample.com%2Fa.m3u8&ref=https%3A%2F%2Fpeachify.top%2F"
+# expect: 302 -> https://flixerz-play.<you>.workers.dev/play?...
+```
+
+In the browser: DevTools Network during playback — segments load from
+`flixerz-play...workers.dev`, not Vercel. Vercel usage (Fast Origin Transfer)
+goes flat except API JSON.
+
+## Limits cheat sheet
+
+- Vercel Hobby: 10 GB origin + 100 GB data + 1M invocations / month.
+- After the move: ~15 KB origin + ~10 invocations per watch.
+- Worker free: 100k req/day (~800 per proxied movie = ~125/day shared;
+  direct-play movies cost 0).
+- Pages free: unlimited bandwidth/requests.
