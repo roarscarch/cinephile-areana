@@ -1,4 +1,4 @@
-// functions/lib/subs.js — SubDL + OpenSubtitles ported to Workers runtime.
+// functions/lib/subtitles.js — SubDL + OpenSubtitles ported to Workers runtime.
 //
 // Adaptations vs src/services/subtitles.js:
 //   axios            -> fetch

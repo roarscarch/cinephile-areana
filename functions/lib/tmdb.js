@@ -1,12 +1,12 @@
-// functions/lib/flix.js — CinephileHQ (TMDB + orchestration) ported to Workers runtime.
+// functions/lib/tmdb.js — CinephileHQ (TMDB + orchestration) ported to Workers runtime.
 //
 // Same logic as src/services/tmdb.js. Adaptations:
 //   axios instance      -> tmdbGet() on native fetch
 //   _validateSubtitles loopback via 127.0.0.1 -> direct fetchSubdlVtt() call
 //   env comes from constructor (Pages/Workers bindings), not process.env
 
-import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, signPlayUrl } from './ex.js';
-import { fetchEnglishSubtitles, fetchSubdlVtt } from './subs.js';
+import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, signPlayUrl } from './extractor.js';
+import { fetchEnglishSubtitles, fetchSubdlVtt } from './subtitles.js';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';

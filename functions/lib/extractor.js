@@ -1,4 +1,4 @@
-// functions/lib/ex.js — Stream resolver ported to Workers runtime (no Node APIs).
+// functions/lib/extractor.js — Stream resolver ported to Workers runtime (no Node APIs).
 //
 // Same logic as src/services/extractor.js:
 //   peachify  -> AES-256-GCM (WebCrypto) -> { sources, subtitles }

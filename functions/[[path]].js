@@ -1,4 +1,5 @@
 // functions/[[path]].js — Cloudflare Pages Function: entire metadata API.
+// (The [[path]] name is a Pages routing convention = catch-all route.)
 //
 // Same routes as the Express app (src/routes/*.js), same JSON shapes.
 // Not ported: SSR home (client hydrates — the no-ssr guard covers it),
@@ -9,9 +10,9 @@
 // frontend needs ZERO changes: api.js stays same-origin, player.js already
 // points at the play Worker.
 
-import { CinephileHQ } from './lib/flix.js';
-import { fetchSubdlVtt } from './lib/subs.js';
-import { signPlayUrl } from './lib/ex.js';
+import { CinephileHQ } from './lib/tmdb.js';
+import { fetchSubdlVtt } from './lib/subtitles.js';
+import { signPlayUrl } from './lib/extractor.js';
 
 function signOrigins(env) {
   return new Set(

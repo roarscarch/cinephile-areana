@@ -1,5 +1,6 @@
 # wrangler.toml — Cloudflare Workers config for the /play stream proxy
 # Deploy: npx wrangler deploy   (run inside worker/)
+# Sibling config wrangler.api.toml deploys the API proxy (cinephile-api).
 # Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
 
 name = "cinephile-play"
