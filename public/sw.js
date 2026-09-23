@@ -7,15 +7,15 @@
 //  - API + /play: NEVER cached (auth'd tokens, range requests, live data)
 // Bump this name on every release that changes static assets — the activate
 // handler purges the old cache, so a stale SW cache can never outlive a deploy.
-const CACHE = 'myflixerz-v20';
-// Versioned URLs to match what index.html actually requests (?v=18) — precaching
+const CACHE = 'myflixerz-v21';
+// Versioned URLs to match what index.html actually requests (?v=19 for player) — precaching
 // the bare paths instead used to guarantee a MISS at runtime (the SW would
 // fetch /js/api.js?v=18 while holding /js/api.js), so the install downloaded
 // every shell file twice.
 // /vendor/hls.min.js is deliberately NOT precached: ~400 KB that no browse/
 // search/home page needs — player.js lazy-loads it on the watch page, and that
 // fetch is cached here at runtime (static assets are cache-first).
-const SHELL = ['/', '/css/style.css', '/js/api.js?v=18', '/js/player.js?v=18', '/js/render.js?v=18', '/js/router.js?v=18', '/fonts/outfit-latin.woff2', '/manifest.webmanifest', '/icons/icon.svg'];
+const SHELL = ['/', '/css/style.css', '/js/api.js?v=18', '/js/player.js?v=19', '/js/render.js?v=18', '/js/router.js?v=18', '/fonts/outfit-latin.woff2', '/manifest.webmanifest', '/icons/icon.svg'];
 
 // everything the app fetches from our own API — network only.
 const NETWORK_ONLY = /^\/(?:play|download|sources|servers|subtitles|dubs|search|info|recent|trending|movies|tv|genre|top-imdb|health|movie\/embed|tv\/embed)(?:\/|\?|$)/;

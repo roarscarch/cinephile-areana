@@ -1,0 +1,13 @@
+# wrangler.toml — Cloudflare Workers config for the /play stream proxy
+# Docs: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "flixerz-play"
+main = "play-proxy.js"
+compatibility_date = "2026-09-01"
+
+# Free plan: 100k req/day, unlimited bandwidth. ~800 reqs per proxied movie.
+# workers.dev subdomain is fine to start; add a custom domain later for prod.
+workers_dev = true
+
+# Stream proxy is network-bound (fetch passthrough), well under CPU limits.
+# [limits] not needed on free plan.

@@ -201,6 +201,15 @@ module.exports = function streamRoutes() {
   const router = Router();
 
   router.get('/play', async (req, res) => {
+    // Option A guard: when PLAY_PROXY_BASE is set (Vercel), don't proxy bytes
+    // here — 302 to the Cloudflare Worker so stale clients (cached player.js)
+    // burn zero Fast Origin Transfer. Costs one tiny redirect, no video bytes.
+    // Local dev / VPS leave it unset and proxy as before.
+    const proxyBase = (process.env.PLAY_PROXY_BASE || '').replace(/\/$/, '');
+    if (proxyBase) {
+      return res.redirect(302, `${proxyBase}${req.originalUrl}`);
+    }
+
     const { url, ref, origin } = req.query;
     if (!url) return res.status(400).json({ error: 'url query parameter is required' });
     const referer = ref || 'https://peachify.top/';

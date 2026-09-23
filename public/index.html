@@ -14,6 +14,8 @@
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="dns-prefetch" href="https://x.eat-peach.sbs" />
   <link rel="dns-prefetch" href="https://new.vidnest.fun" />
+  <link rel="dns-prefetch" href="https://flixerz-play.cinephilia-areana.workers.dev" />
+  <link rel="preconnect" href="https://flixerz-play.cinephilia-areana.workers.dev" crossorigin />
   <!-- Outfit is self-hosted now (see @font-face in style.css): same-origin
        variable woff2 (all weights in ONE 32 KB file), no
        fonts.googleapis.com / fonts.gstatic.com round-trip on the critical
@@ -65,7 +67,7 @@
        (browse/search pages skip ~400KB of parsing) -->
   <!-- ?v= busts the service-worker/HTTP caches on release — bump alongside sw.js CACHE -->
   <script src="/js/api.js?v=18"></script>
-  <script src="/js/player.js?v=18"></script>
+  <script src="/js/player.js?v=19"></script>
   <!-- render.js must load before router.js (shared SSR/client markup helpers) -->
   <script src="/js/render.js?v=18"></script>
   <script src="/js/router.js?v=18"></script>

@@ -17,6 +17,10 @@ const Player = (() => {
     videasy: 'Videasy', hollymoviehd: 'HollyMovie', rogflix: 'Rogflix', buzz: 'Buzz', ngc: 'NGC', vidxyz: 'VidXYZ',
   };
 
+  // Option A: video bytes ride the Cloudflare Worker, not Vercel.
+  // Override with window.__PLAY_PROXY__ (e.g. in index.html) if the URL changes.
+  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://flixerz-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
+
   // Fallback race budget per title load. Each failed provider is added to a
   // skip list and the remainder is re-raced — every attempt is a FRESH server,
   // so we converge on a working one (or a clear error) instead of looping.
@@ -50,7 +54,7 @@ const Player = (() => {
     const params = new URLSearchParams({ ref: referer || 'https://peachify.top/' });
     if (origin) params.set('origin', origin);
     params.set('url', url);
-    return `/play?${params.toString()}`;
+    return `${PLAY_PROXY_BASE}/play?${params.toString()}`;
   }
 
   function pickBest(sources) {
