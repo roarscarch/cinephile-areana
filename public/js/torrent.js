@@ -9,7 +9,13 @@ const Torrent = (() => {
   const FETCH_TIMEOUT = 9000;
 
   // Public trackers baked into YTS magnets (YTS API returns bare hashes).
+  // Browsers can't use udp:// trackers (no raw sockets) — the wss:// ones
+  // below are what actually connect WebRTC peers. WebTorrent also ships
+  // defaults, but explicit is better for magnet portability.
   const TRACKERS = [
+    'wss://tracker.openwebtorrents.com:443/announce',
+    'wss://tracker.btorrent.xyz:443/announce',
+    'wss://tracker.fastcast.nz:443/announce',
     'udp://open.demonii.com:1337/announce',
     'udp://tracker.openbittorrent.com:80/announce',
     'udp://tracker.coppersurfer.tk:6969/announce',

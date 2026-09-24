@@ -491,6 +491,16 @@ const Player = (() => {
         }
         return this._autoAdvance(this.provider); // Auto mode: race the rest
       }
+      // Torrent-only test/debug switch: ?torrent=1 on the watch hash (or
+      // localStorage cinephile-torrent-only=1) jumps straight to peers,
+      // skipping servers — for verifying peer playback without killing servers.
+      let torrentOnly = false;
+      try {
+        torrentOnly = window.__TORRENT_ONLY__ === true || localStorage.getItem('cinephile-torrent-only') === '1';
+      } catch {}
+      if (torrentOnly && !this._manualServer) {
+        return this._tryTorrentFallback('Peer fallback failed.');
+      }
       this._started = true;
       // respect the stored audio choice (dub) when this server carries it
       let src = null;

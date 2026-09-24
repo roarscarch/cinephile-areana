@@ -800,6 +800,10 @@
     const id = params.id;
     const episodeId = params.episodeId || '1-1';
     const mediaId = `${type}/${id}`;
+    // ?torrent=1 → peer-only test mode (skips servers, straight to torrent).
+    try {
+      window.__TORRENT_ONLY__ = params.torrent === '1';
+    } catch {}
     scrollTop();
     setActiveNav(null);
 
@@ -1231,7 +1235,7 @@
         if (parts[1]) return views.detail({ type: parts[0], id: parts[1] });
         break;
       case 'watch':
-        if (parts[1] && parts[2]) return views.watch({ type: parts[1], id: parts[2], episodeId: parts[3] || '1-1' });
+        if (parts[1] && parts[2]) return views.watch({ type: parts[1], id: parts[2], episodeId: parts[3] || '1-1', torrent: params.torrent });
         break;
       case 'movies':
         return views.browse({ kind: 'movies' });
