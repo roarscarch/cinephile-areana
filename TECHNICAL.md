@@ -325,13 +325,33 @@ played directly).
    `rogflix`, `buzz`, `ngc`) → `resolveVidnest(provider)` only.
 2. `server` given and it's a **peachify** name (`horizon`, `wolf`, `spider`,
    `multi`, `iron`) → that provider only.
-3. `server` null/`auto` → cycle all peachify providers in order
-   (horizon → wolf → spider → multi → iron), return the first with a
-   playable source; if all fail → cycle vidnest providers
-   (videasy → hollymoviehd → rogflix → buzz → ngc).
+3. `server` null/`auto` → race every healthy provider across BOTH families
+   in parallel; the first one whose stream passes the startability probe
+   (master playlist answers) WINS. Dead providers are skipped via 30 s
+   dead-marks; a fully dark family trips a 60 s circuit breaker.
 
 Every resolver result is cached in-memory (`providerCache`, `vidnestCache`),
 so switching servers mid-watch doesn't re-hit the APIs.
+
+### 6.4 Why the winner varies (by design)
+
+Any of the 10+ servers can win any given load — whichever returns a playable
+stream first, wins. The winner changes minute to minute because upstream
+speed does (CDN load, throttling, time of day). This is the resilience
+mechanism, not a bug: a fixed server would stall every play the moment it
+degrades, while the race always flows to whoever is healthy *right now*.
+
+Two nuances:
+
+- **Last-known-good only biases ties.** The previous winner goes first in the
+  order, but order decides only exact-tie arrivals — a slow cached provider
+  still loses to a faster challenger. The memory is also short-lived
+  (per server instance; dead-marks expire in 30 s), so nothing sticks
+  permanently.
+- **Auto vs manual is the contract.** Auto = fastest right now (varies,
+  resilient). S1–S11 buttons = that server every time (consistent; the user
+  owns it if that server degrades — the player stays put and says so instead
+  of silently racing away).
 
 ---
 
