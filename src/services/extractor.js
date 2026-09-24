@@ -368,40 +368,68 @@ const PROBE_STREAM_TIMEOUT_MS = Number(process.env.PROBE_TIMEOUT_MS) || 8000;
 const STREAM_OK_TTL_MS = 60_000;
 const streamOkCache = new Map(); // `${fam}:${provider}:${key}` -> expiry ms
 
+// First playable child inside a playlist body: EXT-X-MAP init segment first
+// (required to start fmp4), else the first bare media line. Relative URLs
+// resolve against the playlist. Used by tests and future ranking signals.
+function firstChildUrl(body, playlistUrl) {
+  try {
+    const text = Buffer.isBuffer(body) ? body.toString('utf8', 0, 4096) : String(body || '').slice(0, 4096);
+    const mapMatch = text.match(/URI="([^"]+)"/);
+    if (mapMatch) return new URL(mapMatch[1], playlistUrl).href;
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      if (line && !line.startsWith('#')) return new URL(line, playlistUrl).href;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function probeHeaders(src) {
+  const headers = { 'User-Agent': STREAM_UA };
+  // This CDN family 404s on empty/missing Referer (no Referer == 404, ANY
+  // non-empty Referer == 200). Mirror /play + player defaults so the probe
+  // sees what playback will see — never probe headerless.
+  if (src.referer) headers.Referer = src.referer;
+  else headers.Referer = PEACHIFY_REFERER;
+  if (src.origin) headers.Origin = src.origin;
+  return headers;
+}
+
 async function probeStreamPlayable(src) {
   if (!src || !src.url) return false;
   try {
-    const headers = { 'User-Agent': STREAM_UA };
-    // This CDN family 404s on empty/missing Referer (no Referer == 404, ANY
-    // non-empty Referer == 200). Mirror /play + player defaults so the probe
-    // sees what playback will see — never probe headerless.
-    if (src.referer) headers.Referer = src.referer;
-    else headers.Referer = PEACHIFY_REFERER;
-    if (src.origin) headers.Origin = src.origin;
     // rogflix-style HLS hides behind /hls3/.../master.txt (no .m3u8). Treat
     // those as playlists too; any response whose body opens with #EXTM3U is
     // accepted as HLS even if the URL gave no hint (mp4 heads never match).
     const isM3U8 = src.isM3U8
       || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url)
       || /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
-    const res = await httpClient.get(src.url, {
-      headers,
+    // NOTE: masters are plain-GET on purpose. Ranged playlist fetches get
+    // rejected (416/reset) by relay CDNs, and multi-level deep probing
+    // bursts get rate-limited — manufacturing exactly the failures the probe
+    // exists to prevent. Server-side checks can't predict client-side
+    // throttling anyway (different IP, gentler pace); the player fallback
+    // cascade owns mid-playback failures.
+    const response = await httpClient.get(src.url, {
+      headers: probeHeaders(src),
       timeout: PROBE_STREAM_TIMEOUT_MS,
       maxRedirects: 4,
       responseType: 'arraybuffer',
-      ...(isM3U8 ? {} : { headers: { ...headers, Range: 'bytes=0-0' } }),
+      ...(isM3U8 ? {} : { headers: { ...probeHeaders(src), Range: 'bytes=0-0' } }),
     });
-    if (!res || (res.status !== 200 && res.status !== 206)) {
-      console.error(`[probe] status ${(res && res.status)} for ${src.url}`);
+    if (!response || (response.status !== 200 && response.status !== 206)) {
+      console.error(`[probe] status ${(response && response.status)} for ${src.url}`);
       return false;
     }
     if (isM3U8) {
-      const head = Buffer.from(res.data || []).toString('utf8', 0, 300);
-      const ok = /#EXT/i.test(head) || String(res.headers['content-type'] || '').includes('mpegurl');
+      const head = Buffer.from(response.data || []).toString('utf8', 0, 300);
+      const ok = /#EXT/i.test(head) || String(response.headers['content-type'] || '').includes('mpegurl');
       if (!ok) console.error(`[probe] not m3u8 head: ${head.slice(0, 100)}`);
       return ok;
     }
-    return (res.data && res.data.byteLength > 0); // mp4/mkv — any ranged bytes is playable
+    return response.data && response.data.byteLength > 0; // mp4/mkv — any ranged bytes is playable
   } catch (e) {
     console.error(`[probe] error for ${src.url}:`, e.message || e);
     return false;
@@ -634,4 +662,6 @@ module.exports = {
   vidnestToResult,
   toResult,
   VIDNEST_ALPHABET,
+  probeStreamPlayable,
+  firstChildUrl,
 };

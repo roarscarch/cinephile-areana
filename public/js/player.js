@@ -638,9 +638,9 @@ const Player = (() => {
           capLevelToPlayerSize: true,
           highBufferWatchdogPeriod: 2,
           fragLoadingMaxRetry: 2,
-          fragLoadingRetryDelay: 1000,
+          fragLoadingRetryDelay: 500,
           levelLoadingMaxRetry: 2,
-          levelLoadingRetryDelay: 1000,
+          levelLoadingRetryDelay: 500,
         });
         this.hls.loadSource(url);
         this.hls.attachMedia(this.video);

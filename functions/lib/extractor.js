@@ -295,31 +295,54 @@ export async function fetchVidnestSubtitles(type, id, season, episode) {
 }
 
 // ---- startability probe (same contract as Node version) ----
+function probeHeaders(src) {
+  const headers = { 'User-Agent': STREAM_UA, Referer: src.referer || PEACHIFY_REFERER };
+  if (src.origin) headers.Origin = src.origin;
+  return headers;
+}
+
+function firstChildUrl(head, playlistUrl) {
+  try {
+    const text = String(head || '').slice(0, 4096);
+    const mapMatch = text.match(/URI="([^"]+)"/);
+    if (mapMatch) return new URL(mapMatch[1], playlistUrl).href;
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      if (line && !line.startsWith('#')) return new URL(line, playlistUrl).href;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function probeStreamPlayable(src) {
   if (!src || !src.url) return false;
   try {
-    const headers = { 'User-Agent': STREAM_UA, Referer: src.referer || PEACHIFY_REFERER };
-    if (src.origin) headers.Origin = src.origin;
+    const headers = probeHeaders(src);
     const isM3U8 =
       src.isM3U8 ||
       /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url) ||
       /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
+    // NOTE: masters are plain-GET on purpose — ranged playlist fetches get
+    // rejected by relay CDNs and deep-probe bursts get rate-limited,
+    // manufacturing the failures the probe exists to prevent.
     if (!isM3U8) headers.Range = 'bytes=0-0';
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), PROBE_STREAM_TIMEOUT_MS);
-    let res;
+    const timeoutId = setTimeout(() => ctrl.abort(), PROBE_STREAM_TIMEOUT_MS);
+    let response;
     try {
-      res = await fetch(src.url, { headers, signal: ctrl.signal, redirect: 'follow' });
+      response = await fetch(src.url, { headers, signal: ctrl.signal, redirect: 'follow' });
     } finally {
-      clearTimeout(t);
+      clearTimeout(timeoutId);
     }
-    if (!res || (res.status !== 200 && res.status !== 206)) return false;
+    if (!response || (response.status !== 200 && response.status !== 206)) return false;
     if (isM3U8) {
-      const head = (await res.text()).slice(0, 300);
-      const ct = res.headers.get('content-type') || '';
-      return /#EXT/i.test(head) || ct.includes('mpegurl');
+      const head = (await response.text()).slice(0, 300);
+      const contentType = response.headers.get('content-type') || '';
+      return /#EXT/i.test(head) || contentType.includes('mpegurl');
     }
-    return (await res.arrayBuffer()).byteLength > 0;
+    return (await response.arrayBuffer()).byteLength > 0;
   } catch {
     return false;
   }
