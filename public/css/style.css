@@ -994,4 +994,7 @@ button { font-family: inherit; }
 }
 .vol-pop input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; }
 .vol-pop span { font-size: 0.8rem; font-weight: 700; color: var(--text); min-width: 46px; text-align: right; }
+/* overflow menu: same popup shell, stacked buttons */
+.more-pop { flex-direction: column; align-items: stretch; min-width: 0; }
+.more-pop .subs-select { text-align: left; white-space: nowrap; }
 

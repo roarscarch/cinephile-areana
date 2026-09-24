@@ -849,8 +849,13 @@
             <button class="subs-select ctl-btn" id="subSyncPlus" title="Subtitles later (shortcut: x)">+</button>
           </span>
           <button class="subs-select ctl-btn" id="speedBtn" title="Playback speed (shortcuts: > / <)">Speed: 1x</button>
-          <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
-          <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
+          <span class="vol-wrap">
+            <button class="subs-select ctl-btn" id="moreBtn" title="More actions">⋯</button>
+            <div class="vol-pop more-pop" id="morePop" hidden>
+              <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
+              <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
+            </div>
+          </span>
           <span class="vol-wrap">
             <button class="subs-select ctl-btn" id="volBtn" title="Volume (shortcuts: ↑ / ↓)">🔊 100%</button>
             <div class="vol-pop" id="volPop" hidden>
@@ -897,13 +902,19 @@
     player.readyWhen(loadHls().catch(() => {}));
     const subsSelect = view.querySelector('#subsSelect');
 
-    // toolbar: speed + PiP + download + resume notice
+    // toolbar: speed + overflow (PiP + download) + resume notice
     const speedBtn = view.querySelector('#speedBtn');
+    const moreBtn = view.querySelector('#moreBtn');
+    const morePop = view.querySelector('#morePop');
     const pipBtn = view.querySelector('#pipBtn');
     const downloadBtn = view.querySelector('#downloadBtn');
     if (!document.pictureInPictureEnabled || !document.createElement('video').requestPictureInPicture) {
       pipBtn.hidden = true;
     }
+    moreBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      morePop.hidden = !morePop.hidden;
+    });
     shell.addEventListener('speed-change', (e) => {
       const r = Math.round(e.detail.rate * 100) / 100;
       speedBtn.textContent = `Speed: ${r}x`;
@@ -942,6 +953,7 @@
     player.shell.addEventListener('volume-change', (e) => syncVol(e.detail.volume));
     document.addEventListener('click', (e) => {
       if (!volPop.contains(e.target) && !volBtn.contains(e.target)) volPop.hidden = true;
+      if (!morePop.contains(e.target) && !moreBtn.contains(e.target)) morePop.hidden = true;
     });
     syncVol(player.getVolume());
     shell.addEventListener('progress-resumed', (e) => toastMsg(`Resumed from ${fmtTime(e.detail.pos)}`));

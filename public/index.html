@@ -22,7 +22,7 @@
        path, and the service worker caches it. crossorigin is required on font
        preloads even for same-origin files (font fetches are CORS-mode). -->
   <link rel="preload" href="/fonts/outfit-latin.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="/css/style.css?v=5" />
+  <link rel="stylesheet" href="/css/style.css?v=6" />
   <script>
     // The server SSRs the HOME view into <main id="view"> for every '/' request,
     // and the URL hash is never sent to the server — so on a deep link
@@ -70,7 +70,7 @@
   <script src="/js/player.js?v=30"></script>
   <!-- render.js must load before router.js (shared SSR/client markup helpers) -->
   <script src="/js/render.js?v=21"></script>
-  <script src="/js/router.js?v=26"></script>
+  <script src="/js/router.js?v=27"></script>
   <script>
     // PWA: register the service worker (installable app + cached shell)
     if ('serviceWorker' in navigator) {
