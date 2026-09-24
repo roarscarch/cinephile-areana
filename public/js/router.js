@@ -1191,7 +1191,13 @@
       }
     }
 
-    player.load({ mediaId, episodeId, title, image: info ? info.image : '' });
+    player.load({ mediaId, episodeId, title, image: info ? info.image : '', imdbId: info ? info.imdbId : null });
+    shell.addEventListener('torrent-vpn', () => {
+      toastMsg('Peer mode shares your IP with other downloaders — a VPN is recommended.');
+    });
+    shell.addEventListener('torrent-ready', (e) => {
+      toastMsg(`Playing peer copy${e.detail.seeds ? ` (${e.detail.seeds} seeds)` : ''} — thanks for seeding back.`);
+    });
   };
 
   // ---------------- router ----------------

@@ -147,10 +147,15 @@ export class CinephileHQ {
       const vids = ((data.videos && data.videos.results) || []).filter((v) => v.site === 'YouTube' && v.key);
       const trailer =
         (vids.find((v) => v.type === 'Trailer') || vids.find((v) => v.type === 'Teaser') || {}).key || null;
+      let imdbId = null;
+      try {
+        imdbId = await this._imdbId(type, id);
+      } catch (e) {}
       const info = {
         id: `${type}/${data.id}`,
         title,
         trailer,
+        imdbId,
         cover: this._img(data.backdrop_path),
         image: this._img(data.poster_path),
         description: data.overview,

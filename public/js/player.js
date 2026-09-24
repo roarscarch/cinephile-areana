@@ -412,12 +412,15 @@ const Player = (() => {
       }, 800);
     }
 
-    load({ mediaId, episodeId = '1-1', title, server = null, image = '' }) {
+    load({ mediaId, episodeId = '1-1', title, server = null, image = '', imdbId = null }) {
       this.mediaId = mediaId;
       this.episodeId = episodeId;
       this.server = server;
       this._title = title || '';
       this._image = image;
+      this._imdbId = imdbId || null;
+      this._destroyTorrent();
+      this._torrentTried = false;
       this.quality = localStorage.getItem('cinephile-quality') || 'auto';
       this.audio = localStorage.getItem('cinephile-audio') || 'auto';
       try {
@@ -572,6 +575,7 @@ const Player = (() => {
 
     _attach(src) {
       this._currentSource = src;
+      this._destroyTorrent(); // leaving peer mode (if active) for a server stream
       this._attachId = (this._attachId || 0) + 1;
       const attachId = this._attachId; // stale handlers from older attaches are ignored
       // Forward the SOURCE's own referer (buzz: ployan.me, multi: laika422mon…)
@@ -817,7 +821,7 @@ const Player = (() => {
       if (!this._racedProviders) this._racedProviders = new Set();
       if (failedProvider) this._racedProviders.add(failedProvider);
       if (this._raceAttempts >= MAX_RACE_ATTEMPTS) {
-        return this.showError('All servers failed. Try again later.');
+        return this._tryTorrentFallback('All servers failed. Try again later.');
       }
       this._raceAttempts += 1;
       const skip = [...this._racedProviders];
@@ -830,8 +834,113 @@ const Player = (() => {
       this.switchServer(null, skip);
     }
 
+    /** Torrent fallback: only when Auto exhausted every server. Manual
+     * picks stay strict (the user owns that choice). Needs the title's IMDb
+     * id (passed via load); without it we fall straight to the error. */
+    async _tryTorrentFallback(finalError) {
+      if (this._torrentTried || this._manualServer || !this._imdbId || typeof Torrent === 'undefined') {
+        return this.showError(finalError);
+      }
+      this._torrentTried = true;
+      this.showLoading('All servers are down — asking peers…');
+      try {
+        try {
+          if (!localStorage.getItem('cinephile-vpn-warned')) {
+            localStorage.setItem('cinephile-vpn-warned', '1');
+            this.shell.dispatchEvent(new CustomEvent('torrent-vpn'));
+          }
+        } catch {}
+        let season = 1;
+        let episode = 1;
+        if (String(this.mediaId).startsWith('tv/')) {
+          const parts = String(this.episodeId || '1-1').split('-');
+          season = parts[0] || 1;
+          episode = parts[1] || 1;
+        }
+        const [type] = String(this.mediaId).split('/');
+        const found = await Torrent.resolve({ type, imdbId: this._imdbId, season, episode });
+        if (!found) return this.showError(finalError);
+        await this._loadTorrentLib();
+        this.showLoading(`Peer copy found (${found.seeds} seed${found.seeds === 1 ? '' : 's'}) — connecting…`);
+        await this._playTorrent(found);
+        this.hideLoading();
+        this._started = true;
+        this.shell.dispatchEvent(
+          new CustomEvent('torrent-ready', { detail: { name: found.name, seeds: found.seeds } })
+        );
+      } catch (e) {
+        this.showError(e && e.message ? `Peer fallback failed: ${e.message}` : finalError);
+      }
+    }
+
+    _loadTorrentLib() {
+      if (window.WebTorrent) return Promise.resolve();
+      if (!this._torrentLibPromise) {
+        this._torrentLibPromise = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = '/vendor/webtorrent.min.js';
+          script.onload = () => resolve();
+          script.onerror = () => {
+            this._torrentLibPromise = null;
+            reject(new Error('peer library failed to load'));
+          };
+          document.head.appendChild(script);
+        });
+      }
+      return this._torrentLibPromise;
+    }
+
+    _destroyTorrent() {
+      try {
+        if (this._torrentClient) this._torrentClient.destroy();
+      } catch {}
+      this._torrentClient = null;
+      clearTimeout(this._torrentTimer);
+    }
+
+    _playTorrent(found) {
+      this._destroyTorrent();
+      return new Promise((resolve, reject) => {
+        let done = false;
+        const finish = (error) => {
+          if (done) return;
+          done = true;
+          clearTimeout(this._torrentTimer);
+          if (error) {
+            this._destroyTorrent();
+            reject(error);
+          } else resolve();
+        };
+        this._torrentTimer = setTimeout(() => finish(new Error('no peers answered in 45s — try again later')), 45000);
+        try {
+          this._torrentClient = new window.WebTorrent();
+          this._torrentClient.add(found.magnet, (torrent) => {
+            const playable = (torrent.files || [])
+              .filter((file) => /\.(mp4|webm|m4v)($|\?)/i.test(file.name || ''))
+              .sort((a, b) => (b.length || 0) - (a.length || 0))[0];
+            if (!playable) {
+              finish(new Error('no playable file in the peer copy'));
+              return;
+            }
+            playable.renderTo(this.video, (renderError) => {
+              if (renderError) finish(new Error('peer playback failed to start'));
+              else {
+                this.video.play().catch(() => {});
+                finish(null);
+              }
+            });
+          });
+          this._torrentClient.on('error', (torrentError) => finish(torrentError));
+        } catch (error) {
+          finish(error);
+        }
+      });
+    }
+
     async switchServer(name, skip = []) {
       this.server = name;
+      this._destroyTorrent();
+      this._torrentTried = false;
       // A named server is a MANUAL pick (sticky); null/undefined is Auto (race).
       this._manualServer = !!name;
       this.currentIndex = 0;
