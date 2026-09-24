@@ -799,24 +799,14 @@ button { font-family: inherit; }
   flex-wrap: wrap;
   margin-top: 16px;
 }
-.server-btn {
-  padding: 9px 18px;
-  border-radius: 999px;
-  border: 1px solid var(--line);
-  background: var(--surface);
+.server-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s;
 }
-.server-btn:hover { color: var(--text); }
-.server-btn.active {
-  background: var(--grad);
-  border-color: transparent;
-  color: #fff;
-}
-.server-btn.loading { opacity: 0.6; pointer-events: none; }
 
 .subs-select {
   padding: 9px 18px;

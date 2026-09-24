@@ -858,11 +858,11 @@
               <span id="volLabel">100%</span>
             </div>
           </span>
-          <span class="sub" id="providerInfo"></span>
         </div>
       </div>`;
 
-    // server buttons
+    // server picker: one compact dropdown (was a 12-pill row). Auto stays
+    // default; manual picks stick like before.
     const bar = view.querySelector('#serverBar');
     try {
       const servers = await API.servers();
@@ -872,19 +872,21 @@
         const position = order.indexOf(name);
         return position < 0 ? 999 : position;
       };
+      const sorted = [...servers].sort((a, b) => rank(a.name) - rank(b.name));
       bar.innerHTML =
-        `<button class="server-btn active" data-server="">Auto</button>` +
-        [...servers]
-          .sort((a, b) => rank(a.name) - rank(b.name))
-          .map((server) => `<button class="server-btn" data-server="${server.name}" title="Server ${rank(server.name) + 1}">${labels[server.name] || server.name}</button>`)
-          .join('');
-      bar.querySelectorAll('.server-btn').forEach((button) =>
-        button.addEventListener('click', () => {
-          bar.querySelectorAll('.server-btn').forEach((other) => other.classList.remove('active'));
-          button.classList.add('active', 'loading');
-          player.switchServer(button.dataset.server).finally(() => button.classList.remove('loading'));
-        })
-      );
+        `<label class="server-pick">Server <select class="subs-select" id="serverSelect">` +
+        `<option value="">Auto</option>` +
+        sorted
+          .map((server) => `<option value="${server.name}">${labels[server.name] || server.name}</option>`)
+          .join('') +
+        `</select></label>`;
+      const serverSelect = bar.querySelector('#serverSelect');
+      serverSelect.addEventListener('change', () => {
+        serverSelect.disabled = true;
+        player.switchServer(serverSelect.value).finally(() => {
+          serverSelect.disabled = false;
+        });
+      });
     } catch (e) {}
 
     // player — created immediately, no awaiting. The hls.js download starts
@@ -964,16 +966,13 @@
     }
     shell.addEventListener('subtitles-ready', () => refreshSubtitleUI());
     shell.addEventListener('sources-ready', (e) => {
-      const labels = Player.PROVIDER_LABELS;
-      const winner = e.detail.provider;
-      // sync the server buttons to whoever actually won (auto races and
-      // fallbacks may land on a server the user never clicked)
-      bar.querySelectorAll('.server-btn').forEach((button) =>
-        button.classList.toggle('active', button.dataset.server === (winner || ''))
-      );
-      const trackCount = (player.subtitles || []).length;
-      document.getElementById('providerInfo').textContent =
-        winner ? `${labels[winner] || winner}${trackCount ? ` · ${trackCount} subtitle${trackCount === 1 ? '' : 's'}` : ''}` : '';
+      // sync the dropdown to whoever actually won (auto races and fallbacks
+      // may land on a server the user never picked)
+      const serverSelect = bar.querySelector('#serverSelect');
+      if (serverSelect && e.detail.provider !== undefined) {
+        const known = [...serverSelect.options].some((opt) => opt.value === (e.detail.provider || ''));
+        if (known) serverSelect.value = e.detail.provider || '';
+      }
       if ((player.subtitles || []).length) refreshSubtitleUI(); // server switch → reapply
       collectDubs();
     });
@@ -1083,7 +1082,8 @@
       const current = player.server || player.provider;
       if (owner && owner !== current) {
         // language lives on another server — switch, then apply it
-        bar.querySelectorAll('.server-btn').forEach((button) => button.classList.toggle('active', button.dataset.server === owner));
+        const serverSelect = bar.querySelector('#serverSelect');
+        if (serverSelect) serverSelect.value = owner;
         player
           .switchServer(owner)
           .then(() => {
