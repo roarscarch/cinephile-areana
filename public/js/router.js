@@ -139,6 +139,93 @@
     bindCards(hwSection);
   }
 
+  // ---- taste row ("Because you watched"): genre affinity from local
+  // history, picks from genre rows. All on-device, no accounts. Affinity is
+  // recomputed weekly (8 cached /info calls max); picks refresh per visit
+  // (2 edge-cached genre calls). Watched/saved titles are excluded.
+  const TASTE_KEY = 'cinephile-taste';
+  const TASTE_TTL = 7 * 24 * 60 * 60 * 1000;
+  function readTaste() {
+    try {
+      const cached = JSON.parse(localStorage.getItem(TASTE_KEY) || 'null');
+      if (cached && Date.now() - (cached.ts || 0) < TASTE_TTL) return cached;
+    } catch (e) {}
+    return null;
+  }
+  async function computeTaste(historyItems) {
+    const recent = historyItems.slice(0, 8);
+    const counts = {};
+    const firstSeen = {};
+    await Promise.all(
+      recent.map(async (entry) => {
+        try {
+          const info = await API.info(entry.id);
+          for (const genre of info.genres || []) {
+            counts[genre] = (counts[genre] || 0) + 1;
+            if (!(genre in firstSeen)) firstSeen[genre] = entry.title || '';
+          }
+        } catch (e) {}
+      })
+    );
+    const top = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 2)
+      .map(([genre]) => genre);
+    const taste = { genres: top, title: firstSeen[top[0]] || '', ts: Date.now() };
+    try {
+      localStorage.setItem(TASTE_KEY, JSON.stringify(taste));
+    } catch (e) {}
+    return taste;
+  }
+  async function fillTasteRow() {
+    const section = view.querySelector('#tasteSection');
+    if (!section) return;
+    let historyItems = [];
+    try {
+      const raw = JSON.parse(localStorage.getItem('cinephile-history') || '[]');
+      if (Array.isArray(raw)) historyItems = raw;
+    } catch (e) {}
+    if (historyItems.length < 2) {
+      section.hidden = true;
+      return;
+    }
+    try {
+      const taste = readTaste() || (await computeTaste(historyItems));
+      if (!taste.genres.length) {
+        section.hidden = true;
+        return;
+      }
+      const seen = new Set();
+      for (const key of Object.keys(JSON.parse(localStorage.getItem('cinephile-progress') || '{}'))) {
+        const parts = String(key).split('/');
+        if (parts.length >= 2) seen.add(`${parts[0]}/${parts[1]}`);
+      }
+      for (const entry of historyItems) seen.add(entry.id);
+      for (const saved of getWatchlist()) seen.add(saved.id);
+      const lists = await Promise.all(taste.genres.map((genre) => API.genre(genre).catch(() => null)));
+      const pooled = new Map();
+      for (const list of lists) {
+        for (const item of (list && list.results) || []) {
+          if (!item.id || seen.has(item.id) || pooled.has(item.id)) continue;
+          pooled.set(item.id, item);
+        }
+      }
+      const picks = [...pooled.values()].sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 12);
+      if (!picks.length) {
+        section.hidden = true;
+        return;
+      }
+      section.hidden = false;
+      const titleEl = section.querySelector('#tasteTitle');
+      if (titleEl) titleEl.textContent = taste.title ? `Because you watched ${taste.title}` : 'Picked for you';
+      section.querySelector('.row-wrap').outerHTML = rowWithArrows(picks.map(card).join(''));
+      bindRowArrows(section);
+      bindCards(section);
+    } catch (e) {
+      section.hidden = true;
+    }
+  }
+
   // ---- continue watching (from saved watch positions) ----
   function fmtTime(totalSeconds) {
     const floored = Math.max(0, Math.floor(totalSeconds || 0));
@@ -377,6 +464,8 @@
     fillWatchlistRow();
     // History row (hidden when empty)
     fillHistoryRow();
+    // Taste row (hidden until enough history; fills async)
+    fillTasteRow();
 
     if (ssr) {
       // Trending rows are already painted server-side — wire them up with zero
