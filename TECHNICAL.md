@@ -436,6 +436,26 @@ names, it will waste a day.
 | `vidsrc` | vidsrc-embed.ru | **Cloudflare 403** at the edge |
 | `vidify` | player.vidify.top | **HTTP 522** (origin down) |
 
+### 9.1 Live server scoreboard (measured 2026-09-24, movie/603)
+
+API latency is healthy everywhere (~0.4–1.2 s); differences are in stream
+delivery. Auto-race order already prefers CORS-open hosts on ties.
+
+| Server | API | Stream | Notes |
+|---|---|---|---|
+| `buzz` (97bf1.com) | ~1.2 s | 200, instant, direct | healthiest; zero proxy cost |
+| `videasy` (tiktoks relay) | ~0.5 s | 200 master, **segments throttle (429)** | fastest master, flaky bytes |
+| `rogflix` (akcloud relay) | ~0.5 s | 200 | healthy |
+| `hollymoviehd` (goodstream) | ~0.5 s | 200, **161 KB master** | works; heavyweight playlist |
+| `vidxyz` (sparkvid relay) | ~0.5 s | 302 → signed host | follows redirects fine |
+| `ngc` (nextgen relay) | ~0.5 s | **522 after ~19 s** | origin down/flapping; dead-marks adapt |
+| `horizon`/`iron`/`multi`/`spider`/`wolf` | ~0.4 s | empty for this title | content-gated per title, normal |
+
+Rules derived from this: never cut timeouts for one slow host (false
+negatives), never ranged-probe playlists (416/reset on relays), abort race
+losers on win (sockets, not wall-clock), let dead-marks + breakers absorb
+flapping hosts.
+
 ---
 
 ## 10. How to add a new server (the recipe)
