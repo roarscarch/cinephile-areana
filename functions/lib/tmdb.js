@@ -290,7 +290,16 @@ export class CinephileHQ {
 
   async _episodeSources(episodeId, mediaId, server = null, skip = []) {
     const { type, id, season, episode } = this._parseMedia(episodeId, mediaId);
-    const stream = await resolveStream(this.env, { type, id, season, episode, server, skip });
+    // Expected runtime for the wrong-content guard — concurrent with the
+    // race, awaited only at crowning, so it never delays first frame.
+    const minDurationPromise = this.fetchMediaInfo(mediaId).then((info) => {
+      if (type === 'movie') {
+        const runtimeMin = parseInt(String((info && info.duration) || '').match(/(\d+)/)?.[1] || '0', 10);
+        return runtimeMin > 0 ? Math.min(1800, runtimeMin * 30) : 1200;
+      }
+      return 900;
+    }).catch(() => undefined);
+    const stream = await resolveStream(this.env, { type, id, season, episode, server, skip, minDurationPromise });
     const sources = [];
     for (const source of stream.sources || []) {
       sources.push({

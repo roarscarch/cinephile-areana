@@ -34,6 +34,7 @@ const STREAM_UA =
 
 const PROBE_TIMEOUT_MS = 15000;
 const PROBE_STREAM_TIMEOUT_MS = 8000;
+const SEGMENT_CHECK_TIMEOUT_MS = 6000;
 const STREAM_OK_TTL_MS = 60_000;
 const DEAD_TTL_MS = 30_000;
 const FAMILY_TTL_MS = 60_000;
@@ -301,6 +302,106 @@ function probeHeaders(src) {
   return headers;
 }
 
+function sumDurations(text) {
+  let total = 0;
+  let count = 0;
+  const re = /#EXTINF:([\d.]+)/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const seconds = parseFloat(match[1]);
+    if (Number.isFinite(seconds)) {
+      total += seconds;
+      count++;
+    }
+  }
+  return { total, count };
+}
+
+const VARIANT_BODY_CAP = 512 * 1024;
+
+async function fetchFull(url, referer, origin) {
+  const headers = { 'User-Agent': STREAM_UA, Referer: referer || PEACHIFY_REFERER };
+  if (origin) headers.Origin = origin;
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), SEGMENT_CHECK_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { headers, signal: ctrl.signal, redirect: 'follow' });
+    if (!response || (response.status !== 200 && response.status !== 206)) {
+      return { ok: false, status: response ? response.status : 0, body: '', complete: true };
+    }
+    const full = await response.text();
+    return { ok: true, status: response.status, body: full.slice(0, VARIANT_BODY_CAP), complete: full.length <= VARIANT_BODY_CAP };
+  } catch {
+    return { ok: false, status: 0, body: '', complete: true };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function verifyWinnerSegments(src, minDurationSec = 0) {
+  const isPlaylist =
+    src.isM3U8 ||
+    /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url) ||
+    /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
+  if (!isPlaylist) return true;
+  const checkDuration = (body, receivedComplete, label) => {
+    const { total, count } = sumDurations(body);
+    if (!count || total >= minDurationSec) return true;
+    if (!receivedComplete) return true;
+    console.error(`[verify] too short (${Math.round(total)}s < ${minDurationSec}s): ${label}`);
+    return false;
+  };
+  const definitiveReject = async (url, range) => {
+    const headers = { 'User-Agent': STREAM_UA, Referer: src.referer || PEACHIFY_REFERER };
+    if (src.origin) headers.Origin = src.origin;
+    if (range) headers.Range = range;
+    const ctrl = new AbortController();
+    const timeoutId = setTimeout(() => ctrl.abort(), SEGMENT_CHECK_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, { headers, signal: ctrl.signal, redirect: 'follow' });
+      clearTimeout(timeoutId);
+      if (!response) return { error: false, rejected: false };
+      if (response.status === 200 || response.status === 206) {
+        return { error: false, rejected: false, body: await response.text() };
+      }
+      return { error: true, rejected: true, status: response.status };
+    } catch (e) {
+      clearTimeout(timeoutId);
+      return { error: true, rejected: false };
+    }
+  };
+  // Level 0: master, whole (bounded).
+  const master = await fetchFull(src.url, src.referer, src.origin);
+  if (!master.ok) return true;
+  if (!checkDuration(master.body, master.complete, src.url)) return false;
+  const childUrl = firstChildUrl(master.body, src.url);
+  if (!childUrl) return true;
+  // Level 1: classify cheap first; playlists pay for the full bounded body.
+  const childProbe = await definitiveReject(childUrl, 'bytes=0-4095');
+  if (childProbe.error) {
+    if (childProbe.rejected) {
+      console.error(`[verify] child ${childProbe.status} for ${src.url}`);
+      return false;
+    }
+    return true;
+  }
+  if (!/#EXT/i.test(childProbe.body || '').slice(0, 300)) return true;
+  const variant = await fetchFull(childUrl, src.referer, src.origin);
+  if (!variant.ok) return true;
+  if (!checkDuration(variant.body, variant.complete, childUrl)) return false;
+  const grandchildUrl = firstChildUrl(variant.body, childUrl);
+  if (!grandchildUrl) return true;
+  const grandchild = await definitiveReject(grandchildUrl, 'bytes=0-0');
+  if (grandchild.error) {
+    if (grandchild.rejected) {
+      console.error(`[verify] segment ${grandchild.status} for ${src.url}`);
+      return false;
+    }
+    return true;
+  }
+  return true;
+}
+
 function firstChildUrl(head, playlistUrl) {
   try {
     const text = String(head || '').slice(0, 4096);
@@ -396,8 +497,26 @@ async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
                 if (playable) streamOkCache.set(probeCacheKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
-                (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
-                return finish({ won: true, result: outcome.result });
+                let minDurationSec;
+                try {
+                  minDurationSec = (opts.minDurationPromise && (await opts.minDurationPromise)) || undefined;
+                } catch (e) {
+                  minDurationSec = undefined;
+                }
+                if (minDurationSec === undefined) minDurationSec = opts.type === 'movie' ? 1200 : 900;
+                const verified = await verifyWinnerSegments(outcome.result.sources[0], minDurationSec);
+                if (!verified) {
+                  markDead(outcome.family, outcome.provider, key);
+                  failCounts[outcome.family]++;
+                  lastErrors[outcome.family] = `${outcome.provider.name}: verification failed`;
+                  if (failCounts[outcome.family] === familySizes[outcome.family]) {
+                    familyDeadUntil.set(outcome.family, Date.now() + FAMILY_TTL_MS);
+                  }
+                } else {
+                  if (finished) return;
+                  (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
+                  return finish({ won: true, result: outcome.result });
+                }
               }
               markDead(outcome.family, outcome.provider, key);
               failCounts[outcome.family]++;
@@ -413,7 +532,7 @@ async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
   });
 }
 
-export async function resolveStream(env, { type, id, season, episode, server, skip }) {
+export async function resolveStream(env, { type, id, season, episode, server, skip, minDurationPromise }) {
   if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
   if (!env.PEACHIFY_KEY_HEX) throw new Error('PEACHIFY_KEY_HEX env required');
   if (!env.VIDNEST_ALPHABET) throw new Error('VIDNEST_ALPHABET env required');
@@ -438,7 +557,7 @@ export async function resolveStream(env, { type, id, season, episode, server, sk
   const vidnestOrder = (cachedVidnest ? [cachedVidnest, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedVidnest.name)] : VIDNEST_PROVIDERS).filter(
     (provider) => !skipSet.has(provider.name) && !familyDown('vidnest') && !isDead('vidnest', provider, key)
   );
-  const outcome = await autoRace(env, peachifyOrder, vidnestOrder, key, { type, id, season, episode });
+  const outcome = await autoRace(env, peachifyOrder, vidnestOrder, key, { type, id, season, episode, minDurationPromise });
   if (outcome.won) return outcome.result;
   return { provider: null, sources: [], subtitles: [] };
 }

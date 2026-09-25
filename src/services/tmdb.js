@@ -338,7 +338,17 @@ class CinephileHQ {
     // even deadline-raced. Tracks are decoration the browser pulls separately
     // from GET /subtitles (fetchEpisodeSubtitles) and attaches after playback
     // starts, so even a fully dead subtitle API cannot delay one frame here.
-    const stream = await resolveStream({ type, id, season, episode, server, skip });
+    // Wrong-content guard needs the expected runtime — fetched CONCURRENTLY
+    // with the race (TMDB, 15-min cached, usually warm from the detail page)
+    // and awaited only at crowning time, so it never delays first frame.
+    const minDurationPromise = this.fetchMediaInfo(mediaId).then((info) => {
+      if (type === 'movie') {
+        const runtimeMin = parseInt(String((info && info.duration) || '').match(/(\d+)/)?.[1] || '0', 10);
+        return runtimeMin > 0 ? Math.min(1800, runtimeMin * 30) : 1200;
+      }
+      return 900;
+    }).catch(() => undefined);
+    const stream = await resolveStream({ type, id, season, episode, server, skip, minDurationPromise });
 
     // Pre-sign proxy URLs so the Worker can reject hotlinkers. Unsigned
     // fallback stays working while PLAY_SIGNING_KEY is unset or the Worker

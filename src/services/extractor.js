@@ -446,6 +446,125 @@ async function probeStreamPlayable(src, signal) {
   }
 }
 
+// Sum of #EXTINF durations in a playlist body (seconds + segment count).
+function sumDurations(text) {
+  let total = 0;
+  let count = 0;
+  const re = /#EXTINF:([\d.]+)/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const seconds = parseFloat(match[1]);
+    if (Number.isFinite(seconds)) {
+      total += seconds;
+      count++;
+    }
+  }
+  return { total, count };
+}
+
+// Variant bodies can be ~100-200 KB (thousands of segments); only sums need
+// them whole. Truncation guard: a cut-off sum that already clears the floor
+// passes, but a cut-off sum BELOW it is inconclusive (fail-open), never a
+// rejection — a long movie must not die to our own read cap.
+const VARIANT_BODY_CAP = 512 * 1024;
+const SEGMENT_CHECK_TIMEOUT_MS = 6000;
+
+async function fetchCapped(url, referer, origin, range) {
+  const headers = { 'User-Agent': STREAM_UA, Referer: referer || PEACHIFY_REFERER };
+  if (origin) headers.Origin = origin;
+  if (range) headers.Range = range;
+  const fetchResponse = await httpClient.get(url, {
+    headers,
+    timeout: SEGMENT_CHECK_TIMEOUT_MS,
+    maxRedirects: 4,
+    responseType: 'arraybuffer',
+  });
+  return fetchResponse;
+}
+
+// Winner-only verification: segments serve AND total duration clears the
+// floor (wrong-content guard — e.g. a 16-min featurette labeled as a
+// 142-min movie). Exactly one gentle chain runs, only on the brink of
+// winning. Fail-open everywhere except definitive rejections: timeouts,
+// network resets, unparseable or truncated bodies keep the master verdict;
+// only definitive 4xx/5xx (axios surfaces them as exceptions with
+// error.response.status) or a complete-but-short playlist reject.
+async function verifyWinnerSegments(src, minDurationSec = 0) {
+  const isPlaylist =
+    src.isM3U8 ||
+    /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url) ||
+    /master\.txt($|\?)|\.txt($|\?)/i.test(src.url);
+  if (!isPlaylist) return true; // mp4/mkv byte-verified by the probe itself
+  const checkDuration = (body, receivedComplete, label) => {
+    const { total, count } = sumDurations(body.toString('utf8'));
+    if (!count || total >= minDurationSec) return true;
+    if (!receivedComplete) return true;
+    console.error(`[verify] too short (${Math.round(total)}s < ${minDurationSec}s): ${label}`);
+    return false;
+  };
+  // Definitive rejection check shared by child + segment fetches.
+  const definitiveReject = async (url, range) => {
+    // Returns true = REJECT (definitive 4xx/5xx), false = keep verdict.
+    try {
+      const fetched = await fetchCapped(url, src.referer, src.origin, range);
+      if (!fetched) return false;
+      if (fetched.status === 200 || fetched.status === 206) return { pass: true, body: fetched.data };
+      return { reject: true, status: fetched.status };
+    } catch (e) {
+      const status = e && e.response && e.response.status;
+      if (status) return { reject: true, status };
+      return { pass: true }; // timeout/network — fail open
+    }
+  };
+  try {
+    // Level 0: master body, whole (bounded).
+    let masterRes;
+    try {
+      masterRes = await fetchCapped(src.url, src.referer, src.origin, null);
+    } catch (e) {
+      return true;
+    }
+    if (!masterRes || (masterRes.status !== 200 && masterRes.status !== 206)) return true;
+    const masterReceived = Buffer.from(masterRes.data || []);
+    const masterBody = masterReceived.subarray(0, VARIANT_BODY_CAP);
+    if (!checkDuration(masterBody, masterReceived.length < VARIANT_BODY_CAP, src.url)) return false;
+    const childUrl = firstChildUrl(masterBody, src.url);
+    if (!childUrl) return true;
+    // Level 1: child. Media child → ranged proof via definitiveReject;
+    // playlist child → full bounded body for duration + parse.
+    const childProbe = await definitiveReject(childUrl, 'bytes=0-4095');
+    if (childProbe.reject) {
+      console.error(`[verify] child ${childProbe.status} for ${src.url}`);
+      return false;
+    }
+    if (!childProbe.pass) return true;
+    // Need the child's nature: refetch head cheaply? The ranged body suffices
+    // to classify (#EXTM3U?) but NOT for duration sums of big variants.
+    const childHead = Buffer.from(childProbe.body || []).toString('utf8', 0, 300);
+    if (!/#EXT/i.test(childHead)) return true; // media bytes answered — startable
+    let variantBody;
+    try {
+      const variantRes = await fetchCapped(childUrl, src.referer, src.origin, null);
+      if (!variantRes || (variantRes.status !== 200 && variantRes.status !== 206)) return true;
+      variantBody = Buffer.from(variantRes.data || []);
+    } catch (e) {
+      return true;
+    }
+    const variantComplete = variantBody.length < VARIANT_BODY_CAP;
+    if (!checkDuration(variantBody.subarray(0, VARIANT_BODY_CAP), variantComplete, childUrl)) return false;
+    const grandchildUrl = firstChildUrl(variantBody.subarray(0, VARIANT_BODY_CAP), childUrl);
+    if (!grandchildUrl) return true;
+    const grandchild = await definitiveReject(grandchildUrl, 'bytes=0-0');
+    if (grandchild.reject) {
+      console.error(`[verify] segment ${grandchild.status} for ${src.url}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    return true;
+  }
+}
+
 // ---- auto resolution: FIRST-WIN RACE ----
 // Every healthy provider from BOTH families is probed at once; the first one
 // to return a STARTABLE stream WINS. Each candidate's stream is verified via
@@ -546,8 +665,33 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
                 if (playable) streamOkCache.set(probeCacheKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
-                (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
-                return finish({ won: true, result: outcome.result });
+                // Tentative winner: confirm segments + duration before
+                // crowning. A throttled relay or a mislabeled short (e.g. a
+                // 16-min featurette as a 142-min movie) fails here → treated
+                // exactly like an unstartable stream (dead-mark, race
+                // continues) instead of handing the player a bad source.
+                let minDurationSec;
+                try {
+                  minDurationSec = (opts.minDurationPromise && (await opts.minDurationPromise)) || undefined;
+                } catch (e) {
+                  minDurationSec = undefined;
+                }
+                if (minDurationSec === undefined) minDurationSec = opts.type === 'movie' ? 1200 : 900;
+                const verified = await verifyWinnerSegments(outcome.result.sources[0], minDurationSec);
+                if (!verified) {
+                  markDead(outcome.family, outcome.provider, key);
+                  failCounts[outcome.family]++;
+                  lastErrors[outcome.family] = `${outcome.provider.name}: verification failed`;
+                  if (failCounts[outcome.family] === familySizes[outcome.family]) {
+                    familyDeadUntil.set(outcome.family, Date.now() + FAMILY_TTL_MS);
+                  }
+                } else {
+                  // Re-check: another candidate may have won while verifying —
+                  // never record last-known-good for a provider nobody played.
+                  if (finished) return;
+                  (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
+                  return finish({ won: true, result: outcome.result });
+                }
               }
               // API answered but the stream can't start — treat as dead, keep racing
               markDead(outcome.family, outcome.provider, key);
@@ -573,7 +717,7 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
  * @returns {Promise<{provider, sources: [{url,quality,sizeBytes,isM3U8,headers?}],
  *                    subtitles: [...]}>}
  */
-async function resolveStream({ type, id, season, episode, server, skip }) {
+async function resolveStream({ type, id, season, episode, server, skip, minDurationPromise }) {
   if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
   if (server) {
     const name = String(server).toLowerCase();
@@ -608,7 +752,7 @@ async function resolveStream({ type, id, season, episode, server, skip }) {
     cachedVidnest ? [cachedVidnest, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedVidnest.name)] : VIDNEST_PROVIDERS
   ).filter((provider) => !skipSet.has(provider.name) && !familyDown('vidnest') && !isDead('vidnest', provider, key));
 
-  const outcome = await autoRace(peachifyOrder, vidnestOrder, key, { type, id, season, episode });
+  const outcome = await autoRace(peachifyOrder, vidnestOrder, key, { type, id, season, episode, minDurationPromise });
   if (outcome.won) return outcome.result;
 
   // All providers failed gracefully — return empty so the client can fall back
@@ -695,4 +839,5 @@ module.exports = {
   VIDNEST_ALPHABET,
   probeStreamPlayable,
   firstChildUrl,
+  verifyWinnerSegments,
 };
