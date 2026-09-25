@@ -172,7 +172,7 @@ function decryptPayload(payload) {
   return JSON.parse(plain.toString());
 }
 
-async function fetchProvider(provider, type, id, season, episode) {
+async function fetchProvider(provider, type, id, season, episode, signal) {
   let url = `${PEACHIFY_API}/${provider.path}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
@@ -183,6 +183,7 @@ async function fetchProvider(provider, type, id, season, episode) {
         'User-Agent': STREAM_UA,
       },
       timeout: PROBE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
     });
     const json = res.data;
     if (json && json.isEncrypted) return decryptPayload(json.data);
@@ -237,7 +238,7 @@ function vidnestDecode(data) {
   return Buffer.from(bytes).toString('utf8');
 }
 
-async function fetchVidnestProvider(provider, type, id, season, episode) {
+async function fetchVidnestProvider(provider, type, id, season, episode, signal) {
   const slug = provider.slug || provider.name;
   let url = `${VIDNEST_API}/${slug}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
@@ -249,6 +250,7 @@ async function fetchVidnestProvider(provider, type, id, season, episode) {
         'User-Agent': STREAM_UA,
       },
       timeout: PROBE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
     });
     const json = res.data;
     if (!json || !json.data) throw new Error(`vidnest ${provider.name}: unexpected response`);
@@ -397,7 +399,7 @@ function probeHeaders(src) {
   return headers;
 }
 
-async function probeStreamPlayable(src) {
+async function probeStreamPlayable(src, signal) {
   if (!src || !src.url) return false;
   try {
     // rogflix-style HLS hides behind /hls3/.../master.txt (no .m3u8). Treat
@@ -418,6 +420,7 @@ async function probeStreamPlayable(src) {
       maxRedirects: 4,
       responseType: 'arraybuffer',
       ...(isM3U8 ? {} : { headers: { ...probeHeaders(src), Range: 'bytes=0-0' } }),
+      ...(signal ? { signal } : {}),
     });
     if (!response || (response.status !== 200 && response.status !== 206)) {
       console.error(`[probe] status ${(response && response.status)} for ${src.url}`);
@@ -431,6 +434,13 @@ async function probeStreamPlayable(src) {
     }
     return response.data && response.data.byteLength > 0; // mp4/mkv — any ranged bytes is playable
   } catch (e) {
+    // Aborted losers stay silent and failure-free (no dead-marks) — the race
+    // rethrows these past all bookkeeping via the { aborted } marker.
+    if ((signal && signal.aborted) || (e && (e.code === 'ERR_CANCELED' || e.aborted))) {
+      const aborted = new Error('probe aborted (race won elsewhere)');
+      aborted.aborted = true;
+      throw aborted;
+    }
     console.error(`[probe] error for ${src.url}:`, e.message || e);
     return false;
   }
@@ -465,18 +475,30 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
     const lastErrors = {};
     const failCounts = { peachify: 0, vidnest: 0 };
     const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length };
+    // One abort gate per candidate: crowning a winner cancels every
+    // still-flying upstream fetch (sockets released, upstreams spared).
+    // Aborts are bookkeeping-neutral by contract — see the guards below.
+    // This cannot slow the winner (it only fires AFTER crowning).
+    const controllers = candidates.map(() => new AbortController());
     const finish = (outcome) => {
       if (!finished) {
         finished = true;
+        for (const controller of controllers) {
+          try {
+            controller.abort();
+          } catch {}
+        }
         resolve(outcome);
       }
     };
-    for (const [family, provider] of candidates) {
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
+      const [family, provider] = candidates[candidateIndex];
+      const controller = controllers[candidateIndex];
       (family === 'peachify'
-        ? fetchProvider(provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+        ? fetchProvider(provider, opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
             toResult(provider, payload)
           )
-        : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+        : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
             vidnestToResult(provider, payload)
           )
       )
@@ -485,6 +507,9 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
           return { ok: true, family, provider, result };
         })
         .catch((error) => {
+          if ((error && (error.code === 'ERR_CANCELED' || error.aborted)) || controller.signal.aborted) {
+            return { ok: false, aborted: true };
+          }
           console.error(`[extractor] ${family} ${provider.name} error:`, error.message || error);
           markDead(family, provider, key);
           failCounts[family]++;
@@ -504,6 +529,7 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
           // later finish({won:true}) became a no-op (finished already true). Auto
           // then reported "no sources" for titles whose servers were fine.
           try {
+            if (outcome.aborted) return;
             // Only the caller-VISIBLE winner records last-known-good: a probe
             // settling after someone else already won must not rewrite the
             // cache with a provider nobody actually played.
@@ -511,7 +537,12 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts) {
               const probeCacheKey = `${outcome.family}:${outcome.provider.name}:${key}`;
               let playable = (streamOkCache.get(probeCacheKey) || 0) > Date.now();
               if (!playable) {
-                playable = await probeStreamPlayable(outcome.result.sources[0]);
+                try {
+                  playable = await probeStreamPlayable(outcome.result.sources[0], controller.signal);
+                } catch (probeError) {
+                  if (probeError && probeError.aborted) return;
+                  throw probeError;
+                }
                 if (playable) streamOkCache.set(probeCacheKey, Date.now() + STREAM_OK_TTL_MS);
               }
               if (playable) {
