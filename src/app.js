@@ -15,6 +15,7 @@ const browseRoutes = require('./routes/browse');
 const embedRoutes = require('./routes/embed');
 const streamRoutes = require('./routes/stream');
 const downloadRoutes = require('./routes/download');
+const fojikRoutes = require('./routes/fojik');
 
 const app = express();
 const tmdb = new TMDBService();
@@ -269,7 +270,7 @@ app.use(
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 600,
-  skip: (req) => req.path.startsWith('/play') || req.path.startsWith('/download'),
+  skip: (req) => req.path.startsWith('/play') || req.path.startsWith('/download') || req.path.startsWith('/api/fojik'),
 });
 app.use(limiter);
 
@@ -292,6 +293,7 @@ app.use(browseRoutes(tmdb));
 app.use(embedRoutes(tmdb));
 app.use(streamRoutes());
 app.use(downloadRoutes());
+app.use(fojikRoutes()); // local-only Fojik bridge (JSON only, never proxies bytes)
 
 // 8. SPA fallback
 app.use((req, res, next) => {

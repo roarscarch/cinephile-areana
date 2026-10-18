@@ -858,6 +858,7 @@
             <div class="vol-pop more-pop" id="morePop" hidden>
               <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
               <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
+              <button class="subs-select ctl-btn" id="fojikBtn" hidden title="4K file download via your local Fojik (needs fojik-dl running)">↓ 4K (local)</button>
             </div>
           </span>
           <span class="vol-wrap">
@@ -935,6 +936,75 @@
       a.click();
       a.remove();
       toastMsg('Download started — check your Downloads folder.');
+    });
+    // ---- local-only Fojik 4K downloads ($0, no cloud) ----
+    // fojik-dl runs on YOUR machine (http://localhost:5173). The browser talks
+    // to it directly — Vercel/Cloudflare never see the bytes, so this costs
+    // nothing and never hits serverless timeouts. Movies only (fojik = movies).
+    const fojikBtn = view.querySelector('#fojikBtn');
+    const FOJIK_DIRECT = 'http://127.0.0.1:5173';
+    let fojikBase = ''; // resolved working base: '' = unavailable
+    async function probeFojik() {
+      if (type !== 'movie') return; // fojik index is movies-only
+      // 1) same-origin bridge (works on localhost:3000 local dev, no CORS)
+      try {
+        const r = await fetch('/api/fojik/status');
+        const j = await r.json();
+        if (j && j.reachable) {
+          fojikBase = ''; // use same-origin /api/fojik/resolve/:id
+          fojikBtn.hidden = false;
+          fojikBtn.title = `4K file via local Fojik (${j.index || ''} indexed) — free, no cloud`;
+          return;
+        }
+      } catch {}
+      // 2) direct localhost (works even on the Vercel site, if fojik-dl runs locally)
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 2500);
+        const r = await fetch(`${FOJIK_DIRECT}/api/health`, { signal: ctrl.signal });
+        clearTimeout(t);
+        const j = await r.json();
+        if (j && j.ok) {
+          fojikBase = FOJIK_DIRECT;
+          fojikBtn.hidden = false;
+          fojikBtn.title = '4K file via local Fojik (direct localhost) — free, no cloud';
+        }
+      } catch {}
+    }
+    probeFojik();
+    if (fojikBtn) fojikBtn.addEventListener('click', async () => {
+      const tmdbId = id;
+      fojikBtn.disabled = true;
+      const orig = fojikBtn.textContent;
+      fojikBtn.textContent = '…resolving 4K';
+      try {
+        const resolveUrl = fojikBase
+          ? `${fojikBase}/api/resolve/${tmdbId}`
+          : `/api/fojik/resolve/${tmdbId}`;
+        const r = await fetch(resolveUrl);
+        const j = await r.json();
+        if (!j.ok) throw new Error(j.error || 'not on Fojik');
+        const quals = (j.qualities || []).map((q) => q.quality).join(', ') || '4K';
+        toastMsg(`Fojik has: ${quals} — opening best file… (first resolve ~30s)`);
+        // /download/:id 302s to the signed file URL. Open direct-localhost so
+        // bytes never transit Vercel/Cloudflare.
+        const dlUrl = fojikBase ? `${fojikBase}/download/${tmdbId}` : `/api/fojik/download/${tmdbId}`;
+        // same-origin bridge has no /download passthrough by design (would bill
+        // cloud egress), so always open the local daemon for the actual bytes:
+        window.open(fojikBase ? dlUrl : `${FOJIK_DIRECT}/download/${tmdbId}`, '_blank');
+      } catch (e) {
+        // fetch() itself threw => the local daemon isn't reachable. Anything
+        // else means the daemon ANSWERED with the real upstream reason, so
+        // show that instead of blaming the local setup.
+        if (/Failed to fetch|NetworkError|aborted|refused|unreachable/i.test(e.message || '')) {
+          toastMsg('Local Fojik daemon not running. Start it: cd ~/fojik-dl && node server.js');
+        } else {
+          toastMsg(`Fojik resolve failed: ${e.message}`);
+        }
+      } finally {
+        fojikBtn.disabled = false;
+        fojikBtn.textContent = orig;
+      }
     });
     // volume boost (>100% via Web Audio gain). Button shows the live %, popup
     // has a 10–2000% slider; the player routes through gain+limiter.

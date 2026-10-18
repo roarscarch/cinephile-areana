@@ -38,8 +38,15 @@ const API = (() => {
 
   function bases() {
     const sameOrigin = (typeof location !== 'undefined' && location.origin) || '';
+    const host = (typeof location !== 'undefined' && location.hostname) || '';
+    const isLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/i.test(host) || /:(5173|3000|3001|8000|8080)$/.test(host);
     const direct = [sameOrigin, ...MIRRORS.filter((mirror) => mirror !== sameOrigin)].filter(Boolean);
-    const list = [API_PROXY, ...direct.filter((base) => base !== API_PROXY)];
+    // Local dev (localhost:3000): your working tree has uncommitted provider
+    // fixes the deployed cloud backends don't have yet — so same-origin goes
+    // FIRST here. In production the proxy stays first (hides backend hosts).
+    const list = isLocal
+      ? [...direct.filter((base) => base !== API_PROXY), API_PROXY]
+      : [API_PROXY, ...direct.filter((base) => base !== API_PROXY)];
     let pinned = '';
     try {
       const stored = localStorage.getItem(PIN_KEY);
@@ -48,6 +55,10 @@ const API = (() => {
         if (base && Date.now() - savedAt < PIN_TTL) pinned = base;
       }
     } catch {}
+    // A stale pin to the cloud proxy (saved by an older session) must not
+    // override the local-first order on localhost — the deployed backends
+    // may be behind this working tree.
+    if (isLocal && pinned && pinned !== sameOrigin) pinned = '';
     if (pinned && pinned !== list[0]) return [pinned, ...list.filter((base) => base !== pinned)];
     return list;
   }
@@ -72,8 +83,24 @@ const API = (() => {
         continue;
       }
       if (response.ok) {
+        // /sources answers HTTP 200 even when every provider died upstream
+        // ({sources: []}). That is NOT success — a stale cloud deploy behind
+        // this working tree would otherwise get pinned and playback dies.
+        // Parse first, then fail over to the next base on empty.
+        let body = null;
+        try {
+          body = await response.json();
+        } catch (e) {
+          lastError = new Error('Bad JSON from ' + base);
+          continue;
+        }
+        const wantsSources = typeof path === 'string' && path.startsWith('/sources/');
+        if (wantsSources && body && Array.isArray(body.sources) && body.sources.length === 0) {
+          lastError = new Error('No sources on ' + base);
+          continue;
+        }
         pin(base);
-        return response.json();
+        return body;
       }
       // 429/5xx may succeed on the mirror; 4xx will fail everywhere — stop.
       if (response.status !== 429 && response.status < 500) {

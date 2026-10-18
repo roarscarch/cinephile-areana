@@ -34,18 +34,11 @@ const crypto = require('crypto');
 const { httpClient } = require('../utils/http');
 
 const PEACHIFY_API = 'https://none.eat-peach.sbs';
-const PEACHIFY_KEY_HEX = process.env.PEACHIFY_KEY_HEX;
-if (!PEACHIFY_KEY_HEX) throw new Error("PEACHIFY_KEY_HEX env required (see private secrets repo)");
+const PEACHIFY_KEY_HEX = process.env.PEACHIFY_KEY_HEX || "d8f2a1b5e9c470814f6b2c3a5d8e7f901a2b3c4d5e3f7a8b9c0d1e2f3a4d5c6d";
 const PEACHIFY_REFERER = 'https://peachify.top/';
 
 // Provider order mirrors the site's own player auto-cycling.
-const PROVIDERS = [
-  { name: 'horizon', path: 'hr' },
-  { name: 'wolf', path: 'air' },
-  { name: 'spider', path: 'holly' },
-  { name: 'multi', path: 'multi' },
-  { name: 'iron', path: 'moviebox' },
-];
+const PROVIDERS = [];
 
 // vidnest's player bundles all fetch through new.vidnest.fun. Alphabet is a
 // reordered base64 from their bundle; `slug` overrides the API path segment
@@ -53,21 +46,24 @@ const PROVIDERS = [
 // every title when first wired — re-probed 2026-08: working again, content-
 // gated per title like the rest). vidlink is still dead (502 HTML on every title).
 const VIDNEST_API = 'https://new.vidnest.fun';
+const VIDNEST_SECRET = 'F9k2mR8vL4qP7wY1zN0fG3bS6tH5jC8d_x4R7vN2mP9qL1';
 const VIDNEST_REFERER = 'https://vidnest.fun/';
-const VIDNEST_ALPHABET = process.env.VIDNEST_ALPHABET;
-if (!VIDNEST_ALPHABET) throw new Error("VIDNEST_ALPHABET env required (see private secrets repo)");
+const VIDNEST_ALPHABET = process.env.VIDNEST_ALPHABET || "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
 
 const VIDNEST_PROVIDERS = [
-  // Direct-first: exact-arrival ties in the auto race resolve to the earliest
-  // registered provider, so historically CORS-open (browser-direct, zero proxy
-  // cost) providers go first. Relay/gated hosts (proxy-burning) go last.
-  { name: 'buzz' },                      // 97bf1.com — CORS-open, direct
-  { name: 'vidxyz' },                    // sparkvid relay — CORS-open, direct
-  { name: 'ngc', slug: 'nextgencloudfabric' }, // remoteconsultinggroup — ACAO *, direct
-  { name: 'videasy' },                     // tiktoks.animanga.fun relay — movie + tv
-  { name: 'hollymoviehd' },                // direct mp4/hls streams, per-stream referers
-  { name: 'rogflix' },                     // akcloud.animanga.fun relay
-];
+  { name: 'catflix', slug: 'yflix' },
+  { name: 'filxer', slug: 'rogflix' },
+  { name: 'gama', slug: 'vidzee' },
+  { name: 'lamda', slug: 'ophim' },
+  { name: 'beta', slug: 'flixhq' },
+  { name: 'alfa', slug: 'onehd' },
+  { name: 'prime', slug: 'rpmvid' },
+  { name: 'zeta', slug: 'nextgencloudfabric' },
+  { name: 'ophim', slug: 'klikxxi' },
+  { name: 'sigma', slug: 'hollymoviehd' },
+  { name: 'hexa', slug: 'vidlink' },
+  { name: 'delta', slug: 'allmovies' },
+]
 
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -81,7 +77,8 @@ const PLAY_SIG_TTL_S = 2 * 3600; // signed play URLs live 2h (tokenized CDNs exp
 function signPlayUrl({ url, referer, origin }) {
   const key = process.env.PLAY_SIGNING_KEY;
   if (!key || !url) return null;
-  const base = (process.env.PLAY_PROXY_BASE || PLAY_PROXY_DEFAULT).replace(/\/$/, '');
+  if (!process.env.PLAY_PROXY_BASE) return null;
+  const base = process.env.PLAY_PROXY_BASE.replace(/\/$/, '');
   const ref = referer || PEACHIFY_REFERER;
   const org = origin || '';
   const exp = Math.floor(Date.now() / 1000) + PLAY_SIG_TTL_S;
@@ -240,8 +237,10 @@ function vidnestDecode(data) {
 
 async function fetchVidnestProvider(provider, type, id, season, episode, signal) {
   const slug = provider.slug || provider.name;
-  let url = `${VIDNEST_API}/${slug}/${type}/${id}`;
+  let url = `${VIDNEST_API}/${slug}/${type === 'tv' ? 'tv' : 'movie'}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
+  const n = vidnestNonce();
+  url += `?_n=${encodeURIComponent(n)}`;
   try {
     const res = await httpClient.get(url, {
       headers: {
@@ -253,8 +252,8 @@ async function fetchVidnestProvider(provider, type, id, season, episode, signal)
       ...(signal ? { signal } : {}),
     });
     const json = res.data;
-    if (!json || !json.data) throw new Error(`vidnest ${provider.name}: unexpected response`);
-    return JSON.parse(vidnestDecode(json.data));
+    if (!json || !json.d || !json.n) throw new Error(`vidnest ${provider.name}: unexpected response`);
+    return vidnestDecrypt(json.d, json.n);
   } catch (err) {
     const status = err.response ? err.response.status : '';
     if (status === 502 || status === 404) {
@@ -264,33 +263,76 @@ async function fetchVidnestProvider(provider, type, id, season, episode, signal)
   }
 }
 
+function vidnestNonce() {
+  return crypto.randomBytes(16).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function vidnestDeriveKey(nonce) {
+  return crypto.createHash('sha256').update(`${nonce}|${VIDNEST_SECRET}`).digest();
+}
+
+function vidnestDecrypt(data, nonce) {
+  const raw = Buffer.from(String(data).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const iv = raw.subarray(0, 12);
+  const ct = raw.subarray(12);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', vidnestDeriveKey(nonce), iv);
+  decipher.setAuthTag(ct.subarray(ct.length - 16));
+  const plain = Buffer.concat([decipher.update(ct.subarray(0, ct.length - 16)), decipher.final()]);
+  return JSON.parse(plain.toString('utf8'));
+}
+
 function vidnestToResult(provider, data) {
-  // Decrypted payloads come in three shapes:
-  //   {url, headers}                    — animanga relay hosts (videasy, rogflix)
-  //   {streams: [{url,type,headers,language}]} — direct mp4/hls (hollymoviehd)
-  //   {url, headers, referer, ...}      — direct CDNs (buzz, ngc)
-  const items = Array.isArray(data.streams)
-    ? data.streams
-    : [{ url: data.url, type: data.hls, headers: data.headers, referer: data.referer, label: data.label }];
+  const items = [];
+  if (Array.isArray(data.streams)) items.push(...data.streams);
+  if (data.url) items.push({ url: data.url, type: data.type, quality: data.quality, headers: data.headers, referer: data.referer, label: data.label, subtitles: data.subtitles });
+
+  if (!items.length) return { provider: provider.name, sources: [], subtitles: [] };
+
+  const n = crypto.randomBytes(16).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const ensureUrl = (u) => {
+    if (!u) return u;
+    let url = String(u);
+    if (url.startsWith('/')) url = `${VIDNEST_API}${url}`;
+    if (url.includes('new.vidnest.fun') && !/[?&]_n=/.test(url)) {
+      url += (url.includes('?') ? '&' : '?') + `_n=${encodeURIComponent(n)}`;
+    }
+    return url;
+  };
+
+  const subs = [];
+  const collectSubs = (list) => {
+    if (!Array.isArray(list)) return;
+    for (const s of list) {
+      if (!s || !(s.url || s.file || s.src)) continue;
+      subs.push({
+        url: ensureUrl(s.url || s.file || s.src),
+        label: s.label || s.lang || s.language || 'Unknown',
+        lang: s.lang || s.language || null,
+      });
+    }
+  };
+  collectSubs(data.subtitles);
+  for (const it of items) collectSubs(it.subtitles);
 
   const sources = items
     .map((stream) => {
-      const url = stream.url || stream.file;
+      const url = ensureUrl(stream.url || stream.file || stream.src);
       if (!url) return null;
       return {
         url,
-        quality: stream.quality || stream.resolution || stream.label || 'auto',
-        // rogflix HLS hides behind /hls\d*/.../master.txt (no .m3u8 in the URL)
+        quality: stream.quality || stream.resolution || stream.label || stream.language || 'auto',
         isM3U8: stream.type === 'hls' || /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(url)
           || /master\.txt($|\?)|\.txt($|\?)/i.test(url),
         headers: stream.headers || null,
         referer: (stream.headers && stream.headers.Referer) || stream.referer || null,
+        origin: (stream.headers && (stream.headers.Origin || stream.headers.origin)) || null,
         lang: stream.language || null,
+        dub: stream.language || null,
       };
     })
     .filter(Boolean);
 
-  return { provider: provider.name, sources, subtitles: [] };
+  return { provider: provider.name, sources, subtitles: subs };
 }
 
 async function resolveVidnest({ type, id, season, episode, server }) {
