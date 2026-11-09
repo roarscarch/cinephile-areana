@@ -1,0 +1,27 @@
+# wrangler.lb.toml — free front-door load balancer for cinephilia.in
+#
+# Deploy:  npx wrangler deploy -c wrangler.lb.toml   (run inside worker/)
+#
+# Phase 1 (now): workers_dev = true  -> test at cinephile-lb.<account>.workers.dev
+# Phase 2 (after the zone is added to Cloudflare + nameservers switched):
+#   uncomment the [[routes]] blocks below to bind the custom domain. Each
+#   custom_domain route auto-provisions the DNS record + TLS cert at the edge.
+
+name = "cinephile-lb"
+main = "lb.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[vars]
+PRIMARY = "https://cinephiles-areana.vercel.app"
+FALLBACK = "https://cinephile-areana.pages.dev"
+PLAY_WORKER = "https://cinephile-play.cinephilia-areana.workers.dev"
+
+# ---- Phase 2: bind the domain (requires cinephilia.in as a Cloudflare zone) ----
+# [[routes]]
+# pattern = "cinephilia.in"
+# custom_domain = true
+#
+# [[routes]]
+# pattern = "www.cinephilia.in"
+# custom_domain = true

@@ -10,6 +10,9 @@
   // Canonical host for share links — always the main site so previews work
   // even when browsing a mirror (the /watch meta route lives on Vercel).
   const SHARE_ORIGIN = 'https://cinephilia-vercel.vercel.app';
+  // Playback ALWAYS goes to the dedicated Cloudflare play Worker (never the
+  // app origin), matching the movie player. Keeps video bytes on Cloudflare.
+  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://cinephile-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
   // Per-title server availability probe results, cached in memory for a short
   // TTL (page session). Kept out of localStorage — this is "which servers have
   // a source for THIS title right now", not a permanent record.
@@ -632,15 +635,15 @@
   function stripTags(html) {
     return String(html || '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   }
-  // Route anime media through /play with the Megaplay referer the CDN requires.
-  // Relative /play stays same-origin (works on the Vercel/Worker deployments
-  // too — stream.js 302s to the Worker when PLAY_PROXY_BASE is configured).
+  // Route anime media through the Cloudflare play Worker with the Megaplay
+  // referer the CDN requires. Playback never touches the app origin (Vercel/
+  // Pages/LB) — the bytes come straight from the Worker.
   function animePlayUrl(src, url) {
     if (!url || url.startsWith('/')) return url;
     const params = new URLSearchParams({ ref: (src && src.referer) || 'https://megaplay.buzz/' });
     if (src && src.origin) params.set('origin', src.origin);
     params.set('url', url);
-    return `/play?${params.toString()}`;
+    return `${PLAY_PROXY_BASE}/play?${params.toString()}`;
   }
   // Subtitle blob lifecycle: revoke prior object URLs whenever a new episode
   // loads so repeated navigation doesn't leak memory.
