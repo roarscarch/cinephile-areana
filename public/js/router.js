@@ -393,6 +393,10 @@
   function closeSearch() {
     searchDropdown.classList.remove('open');
   }
+  function closeMobileSearch() {
+    const box = document.getElementById('searchBox');
+    if (box) box.classList.remove('mobile-open');
+  }
 
   // ---------------- nav ----------------
   function setActiveNav(route) {
@@ -401,9 +405,11 @@
 
   function openMobileSearch() {
     const box = document.getElementById('searchBox');
-    box.classList.toggle('mobile-open');
-    box.classList.toggle('hidden');
-    if (box.classList.contains('mobile-open')) searchInput.focus();
+    const open = box.classList.toggle('mobile-open');
+    if (open) {
+      closeMenu();
+      searchInput.focus();
+    }
   }
 
   document.getElementById('searchToggle').addEventListener('click', openMobileSearch);
@@ -420,12 +426,13 @@
       e.stopPropagation();
       const open = navLinks.classList.toggle('open');
       menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) closeMobileSearch();
     });
   }
   navLinks.addEventListener('click', (e) => {
     if (e.target.closest('a')) closeMenu();
   });
-  window.addEventListener('hashchange', closeMenu);
+  window.addEventListener('hashchange', () => { closeMenu(); closeMobileSearch(); });
   searchInput.addEventListener('input', () => runSearch(searchInput.value));
   searchInput.addEventListener('focus', () => searchInput.value && runSearch(searchInput.value));
   searchInput.addEventListener('keydown', (e) => {
@@ -436,7 +443,10 @@
     }
   });
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.search-box')) closeSearch();
+    if (!e.target.closest('.search-box') && !e.target.closest('#searchToggle')) {
+      closeSearch();
+      closeMobileSearch();
+    }
     if (!e.target.closest('.nav-links') && !e.target.closest('#menuToggle')) closeMenu();
   });
 
@@ -747,7 +757,6 @@
     view.innerHTML = `
       <div class="page-head">
         <h1>Anime</h1>
-        <p>Sub &amp; dub — a catalog of its own, separate from movies &amp; TV</p>
         <form class="anime-search" id="animeSearchForm" autocomplete="off">
           <input id="animeSearchInput" type="search" placeholder="Search anime…" value="${escapeHtml(q)}" />
         </form>
