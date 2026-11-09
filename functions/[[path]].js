@@ -206,7 +206,10 @@ export async function onRequest({ request, env, params, next, waitUntil }) {
     // ---- servers ----
     if (a === 'servers' && seg.length === 2) {
       if (!q.get('mediaId')) return err('mediaId query parameter is required', 400);
-      const servers = await api.fetchEpisodeServers(b, q.get('mediaId'));
+      const probe = q.get('probe') === '1' || q.get('probe') === 'true';
+      const servers = probe
+        ? await api.probeEpisodeServers(b, q.get('mediaId'))
+        : await api.fetchEpisodeServers(b, q.get('mediaId'));
       if (!servers || !servers.length) return err('No servers found', 404);
       return json(servers);
     }

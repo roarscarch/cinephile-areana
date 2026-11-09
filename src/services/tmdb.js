@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { TvType } = require('../utils/constants');
-const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, getProviders, getVidnestProviders, getByseProviders, getCinejoyProviders, signPlayUrl } = require('./extractor');
+const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, getProviders, getVidnestProviders, getMeowtvProviders, getByseProviders, getCinejoyProviders, signPlayUrl } = require('./extractor');
 const { fetchEnglishSubtitles } = require('./subtitles'); // primary English subtitle source
 const { httpAgent, httpsAgent } = require('../utils/http');
 
@@ -15,7 +15,13 @@ const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 // on every call — never a boot-time snapshot — so a hot-patched upstream
 // rename shows up in /servers immediately, without a restart.
 function SERVERS() {
-  return [...getProviders(), ...getVidnestProviders(), ...getByseProviders(), ...getCinejoyProviders()];
+  return [
+    ...getProviders(),
+    ...getVidnestProviders(),
+    ...getMeowtvProviders(),
+    ...getByseProviders(),
+    ...getCinejoyProviders(),
+  ];
 }
 
 // Subtitle lookups are ENRICHMENT, never a playback gate: race them against a
@@ -45,7 +51,8 @@ class CinephileHQ {
       timeout: 12000,
     });
     this._genresCache = null;
-    this._cache = new Map(); // { key → { exp, promise } } TTL cache, in-flight dedupe
+    this._cache = new Map();
+    this._probeCache = new Map(); // per-title server availability (short TTL) // { key → { exp, promise } } TTL cache, in-flight dedupe
   }
 
   // ---- helpers ----
@@ -234,6 +241,45 @@ class CinephileHQ {
 
   async fetchEpisodeServers() {
     return SERVERS().map((server) => ({ name: server.name }));
+  }
+
+  /**
+   * Per-TITLE availability probe: resolve every provider for this exact
+   * title/episode (forced) and report which ones return a source. Used by the
+   * watch page to show which servers can actually play THIS movie/episode when
+   * the user wants to switch. Results are cached in memory for a short TTL —
+   * availability and tokens change, and we want this cheap on repeat opens.
+   * Runs concurrently with a per-provider deadline so one dead upstream can't
+   * stall the batch.
+   */
+  async probeEpisodeServers(episodeId, mediaId) {
+    const { type, id, season, episode } = this._parseMedia(episodeId, mediaId);
+    const cacheKey = `${mediaId}|${episodeId}`;
+    const now = Date.now();
+    const hit = this._probeCache.get(cacheKey);
+    if (hit && hit.exp > now) return hit.value;
+
+    const deadline = (promise, ms) =>
+      Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
+    const results = await Promise.all(
+      SERVERS().map(async (server) => {
+        const started = Date.now();
+        let available = false;
+        try {
+          const r = await deadline(
+            resolveStream({ type, id, season, episode, server: server.name }).catch(() => null),
+            9000
+          );
+          available = Boolean(r && r.sources && r.sources.length);
+        } catch (e) {}
+        return { name: server.name, available, ms: Date.now() - started };
+      })
+    );
+    this._probeCache.set(cacheKey, { exp: now + 10 * 60 * 1000, value: results });
+    if (this._probeCache.size > 400) {
+      for (const [k, v] of this._probeCache) if (v.exp < now) this._probeCache.delete(k);
+    }
+    return results;
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {

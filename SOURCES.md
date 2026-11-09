@@ -231,6 +231,23 @@ config/upstreams.json
 - Routing changes are hot-patchable: edit `config/upstreams.json` (or set
   `UPSTREAMS_JSON`) and hit `GET /health/upstreams?refresh=1`, no restart.
 
+### Per-title source availability (switching sources)
+
+A provider that works for one title may have nothing for another. So health is
+tracked **per title**, not globally:
+
+- `GET /servers/{episodeId}?mediaId={type}/{id}&probe=1` resolves **every**
+  provider for *that* title/episode (forced, with a per-provider deadline) and
+  returns `[{ name, available, ms }]`. Results are cached in memory for 10
+  minutes (server-side) — availability and tokens change, so this is a short
+  TTL, not a permanent record.
+- The watch page keeps **Auto** as the default, then runs that probe in the
+  **background** (never blocking playback). When it lands, the server picker
+  **prunes servers with no source for this title** and ticks (`✓`) the ones that
+  have one. The client also memoises the result for the page session.
+- Result: when you switch sources, the dropdown only offers servers that
+  actually have a stream for *this* movie/episode.
+
 ---
 
 ## 5. Adding a new source — checklist

@@ -134,7 +134,13 @@ const API = (() => {
     // subtitle tracks — fired in parallel with sources(); result attaches late
     subtitles: (mediaId, episodeId = '1-1') =>
       get(`/subtitles/${episodeId}?${new URLSearchParams({ mediaId })}`),
-    servers: () => get('/servers/1-1?mediaId=movie/1'),
+    servers: (mediaId = 'movie/1', episodeId = '1-1') =>
+      get(`/servers/${encodeURIComponent(episodeId)}?mediaId=${encodeURIComponent(mediaId)}`),
+    // Per-title availability probe (which servers actually have a source for
+    // THIS title). Cached server-side for a short TTL; used to annotate/prune
+    // the server picker when the user wants to switch sources.
+    probeServers: (mediaId, episodeId = '1-1') =>
+      get(`/servers/${encodeURIComponent(episodeId)}?mediaId=${encodeURIComponent(mediaId)}&probe=1`),
     dubs: (mediaId, episodeId = '1-1') => get(`/dubs/${episodeId}?mediaId=${mediaId}`),
     row: (kind) => get(`/${kind}`),
     browse: (kind, page = 1) => get(`/${kind}?page=${page}`),

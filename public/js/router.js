@@ -10,6 +10,19 @@
   // Canonical host for share links — always the main site so previews work
   // even when browsing a mirror (the /watch meta route lives on Vercel).
   const SHARE_ORIGIN = 'https://cinephilia-vercel.vercel.app';
+  // Per-title server availability probe results, cached in memory for a short
+  // TTL (page session). Kept out of localStorage — this is "which servers have
+  // a source for THIS title right now", not a permanent record.
+  const TITLE_PROBE_TTL_MS = 10 * 60 * 1000;
+  const titleProbeCache = new Map(); // `${mediaId}|${episodeId}` -> { exp, value }
+  async function probeTitleServers(mediaId, episodeId) {
+    const key = `${mediaId}|${episodeId}`;
+    const hit = titleProbeCache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.value;
+    const value = await API.probeServers(mediaId, episodeId);
+    titleProbeCache.set(key, { exp: Date.now() + TITLE_PROBE_TTL_MS, value });
+    return value;
+  }
   // Markup helpers live in render.js — shared with the server's SSR pass so
   // pre-rendered HTML and client-rendered HTML can never drift apart.
   const { card, animeCard, grid, skeletonRow, rowWithArrows, escapeHtml, homeView, TYPE_LABEL } = Render;
@@ -1217,25 +1230,41 @@
         </div>
       </div>`;
 
-    // server picker: one compact dropdown (was a 12-pill row). Auto stays
-    // default; manual picks stick like before.
+    // server picker: Auto stays default. A BACKGROUND per-title probe then
+    // prunes servers that have no source for THIS movie/episode and ticks the
+    // ones that do — so switching only offers sources that actually work here.
     const bar = view.querySelector('#serverBar');
     try {
-      const servers = await API.servers();
       const labels = Player.PROVIDER_LABELS;
       const order = Player.SERVER_ORDER || [];
       const rank = (name) => {
         const position = order.indexOf(name);
         return position < 0 ? 999 : position;
       };
-      const sorted = [...servers].sort((a, b) => rank(a.name) - rank(b.name));
+      let servers = [];
+      try {
+        servers = await API.servers(mediaId, episodeId);
+      } catch (e) {}
+      const avail = {}; // name -> true|false (from the background probe)
+      const optionsHtml = (probed) => {
+        const sel = bar.querySelector('#serverSelect');
+        const cur = sel ? sel.value : '';
+        let list = [...servers].sort((a, b) => rank(a.name) - rank(b.name));
+        if (probed) list = list.filter((s) => avail[s.name] !== false || s.name === cur);
+        return (
+          `<option value="">Auto</option>` +
+          list
+            .map(({ name }) => {
+              const state = avail[name];
+              const tag = state === true ? ' ✓' : state === false ? ' — unavailable' : '';
+              return `<option value="${name}">${labels[name] || name}${tag}</option>`;
+            })
+            .join('')
+        );
+      };
       bar.innerHTML =
         `<label class="server-pick">Server <select class="subs-select" id="serverSelect">` +
-        `<option value="">Auto</option>` +
-        sorted
-          .map((server) => `<option value="${server.name}">${labels[server.name] || server.name}</option>`)
-          .join('') +
-        `</select></label>`;
+        `${optionsHtml(false)}</select></label>`;
       const serverSelect = bar.querySelector('#serverSelect');
       serverSelect.addEventListener('change', () => {
         serverSelect.disabled = true;
@@ -1243,6 +1272,17 @@
           serverSelect.disabled = false;
         });
       });
+      // Fire-and-forget: never blocks playback. When it lands, keep only the
+      // servers that returned a source for this title (plus the current pick).
+      probeTitleServers(mediaId, episodeId)
+        .then((probe) => {
+          if (!Array.isArray(probe)) return;
+          for (const r of probe) avail[r.name] = r.available;
+          const cur = serverSelect.value;
+          serverSelect.innerHTML = optionsHtml(true);
+          if ([...serverSelect.options].some((o) => o.value === cur)) serverSelect.value = cur;
+        })
+        .catch(() => {});
     } catch (e) {}
 
     // player — created immediately, no awaiting. The hls.js download starts

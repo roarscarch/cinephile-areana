@@ -130,7 +130,12 @@ module.exports = function mediaRoutes(tmdb) {
       if (!episodeId) {
         return res.status(400).json({ error: 'Episode ID is required' });
       }
-      const servers = await tmdb.fetchEpisodeServers(episodeId, mediaId);
+      // ?probe=1 → resolve every provider for THIS title and report which are
+      // available (used to annotate/prune the source switcher). Cached server-side.
+      const probe = req.query.probe === '1' || req.query.probe === 'true';
+      const servers = probe
+        ? await tmdb.probeEpisodeServers(episodeId, mediaId)
+        : await tmdb.fetchEpisodeServers(episodeId, mediaId);
       if (!servers || servers.length === 0) {
         return res.status(404).json({ error: 'No servers found' });
       }

@@ -10,6 +10,7 @@ import { fetchEnglishSubtitles, fetchSubdlVtt } from './subtitles.js';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
+const probeCache = new Map(); // per-title server availability (short TTL, per isolate)
 const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS, ...MEOWTV_PROVIDERS, ...BYSE_PROVIDERS, ...CINEJOY_PROVIDERS];
 
 function withDeadline(promise, ms) {
@@ -210,6 +211,39 @@ export class CinephileHQ {
       ...t.families.byse.providers,
       ...t.families.cinejoy.providers,
     ].map((s) => ({ name: s.name }));
+  }
+
+  /**
+   * Per-TITLE availability probe (see Node twin): resolve each provider for
+   * this title and report which return a source. In-memory TTL cache per
+   * isolate — availability/tokens change, and this must stay cheap.
+   */
+  async probeEpisodeServers(episodeId, mediaId) {
+    const { type, id, season, episode } = this._parseMedia(episodeId, mediaId);
+    const cacheKey = `${mediaId}|${episodeId}`;
+    const now = Date.now();
+    const hit = probeCache.get(cacheKey);
+    if (hit && hit.exp > now) return hit.value;
+    const deadline = (promise, ms) =>
+      Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
+    const all = await this.fetchEpisodeServers();
+    const results = await Promise.all(
+      all.map(async (server) => {
+        const started = Date.now();
+        let available = false;
+        try {
+          const r = await deadline(
+            resolveStream(this.env, { type, id, season, episode, server: server.name }).catch(() => null),
+            9000
+          );
+          available = Boolean(r && r.sources && r.sources.length);
+        } catch (e) {}
+        return { name: server.name, available, ms: Date.now() - started };
+      })
+    );
+    probeCache.set(cacheKey, { exp: now + 10 * 60 * 1000, value: results });
+    if (probeCache.size > 400) for (const [k, v] of probeCache) if (v.exp < now) probeCache.delete(k);
+    return results;
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {
