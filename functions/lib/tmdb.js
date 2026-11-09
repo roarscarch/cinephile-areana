@@ -5,12 +5,12 @@
 //   _validateSubtitles loopback via 127.0.0.1 -> direct fetchSubdlVtt() call
 //   env comes from constructor (Pages/Workers bindings), not process.env
 
-import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, signPlayUrl } from './extractor.js';
+import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, MEOWTV_PROVIDERS, BYSE_PROVIDERS, signPlayUrl } from './extractor.js';
 import { fetchEnglishSubtitles, fetchSubdlVtt } from './subtitles.js';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
-const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS];
+const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS, ...MEOWTV_PROVIDERS, ...BYSE_PROVIDERS];
 
 function withDeadline(promise, ms) {
   let timeoutId;
@@ -203,7 +203,12 @@ export class CinephileHQ {
   async fetchEpisodeServers() {
     const { loadUpstreams } = await import('./upstreams.js');
     const t = loadUpstreams(this.env);
-    return [...t.families.peachify.providers, ...t.families.vidnest.providers].map((s) => ({ name: s.name }));
+    return [
+      ...t.families.peachify.providers,
+      ...t.families.vidnest.providers,
+      ...t.families.meowtv.providers,
+      ...t.families.byse.providers,
+    ].map((s) => ({ name: s.name }));
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {

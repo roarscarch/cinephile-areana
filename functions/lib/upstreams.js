@@ -37,7 +37,12 @@ export function loadUpstreams(env) {
   const fams = (raw && raw.families) || {};
   return {
     version: (raw && raw.version) || 1,
-    families: { peachify: normalizeFamily(fams.peachify), vidnest: normalizeFamily(fams.vidnest) },
+    families: {
+      peachify: normalizeFamily(fams.peachify),
+      vidnest: normalizeFamily(fams.vidnest),
+      meowtv: normalizeFamily(fams.meowtv),
+      byse: normalizeFamily(fams.byse),
+    },
     canary: (raw && raw.canary) || {},
   };
 }

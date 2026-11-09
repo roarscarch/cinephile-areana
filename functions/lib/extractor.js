@@ -38,12 +38,35 @@ function vidReferer(env) {
 function vidOrigin(env) {
   return fams(env).vidnest.origin || 'https://vidnest.fun';
 }
+function meowProviders(env) {
+  return (fams(env).meowtv && fams(env).meowtv.providers) || [];
+}
+function meowApi(env) {
+  return (fams(env).meowtv && fams(env).meowtv.api) || '';
+}
+function meowReferer(env) {
+  return (fams(env).meowtv && fams(env).meowtv.referer) || 'https://meowtv.ru/';
+}
+function meowOrigin(env) {
+  return (fams(env).meowtv && fams(env).meowtv.origin) || 'https://meowtv.ru';
+}
+function byseProviders(env) {
+  return (fams(env).byse && fams(env).byse.providers) || [];
+}
+function byseApi(env) {
+  return (fams(env).byse && fams(env).byse.api) || 'https://0123movie.space';
+}
+function byseReferer(env) {
+  return (fams(env).byse && fams(env).byse.referer) || 'https://0123movie.space/';
+}
 
 // Legacy named exports — resolved against the BUNDLED config (no env at
 // import time on the edge). Live code below takes env and reads fresh.
 import bundledTable from './upstreams.json' with { type: 'json' };
 export const PROVIDERS = bundledTable.families.peachify.providers;
 export const VIDNEST_PROVIDERS = bundledTable.families.vidnest.providers;
+export const MEOWTV_PROVIDERS = (bundledTable.families.meowtv && bundledTable.families.meowtv.providers) || [];
+export const BYSE_PROVIDERS = (bundledTable.families.byse && bundledTable.families.byse.providers) || [];
 
 const PEACHIFY_REFERER = 'https://peachify.top/';
 const STREAM_UA =
@@ -59,6 +82,8 @@ const FAMILY_TTL_MS = 60_000;
 // ---- per-isolate caches (same role as the Node Maps) ----
 const providerCache = new Map();
 const vidnestCache = new Map();
+const meowtvCache = new Map();
+const byseCache = new Map();
 const subsCache = new Map();
 const vdrkSubsCache = new Map();
 const deadCache = new Map();
@@ -88,6 +113,11 @@ function b64urlToBytes(s) {
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
+}
+function bytesToB64url(bytes) {
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 const PLAY_PROXY_DEFAULT = 'https://cinephile-play.cinephilia-areana.workers.dev';
 const PLAY_SIG_TTL_S = 2 * 3600;
@@ -196,7 +226,14 @@ export async function fetchSubtitles(env, type, id, season, episode) {
     subsCache.set(key, subs);
     return subs;
   } catch {
-    return [];
+    // peachify subs are offline (family dark) — meowtv serves the same shape.
+    try {
+      const subs = await fetchMeowtvSubtitles(env, type, id, season, episode);
+      subsCache.set(key, subs);
+      return subs;
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -230,7 +267,7 @@ function vidnestNonce() {
 }
 
 async function vidnestDecryptV2(data, nonce, secretOrKey) {
-  const key = crypto.subtle.importKey(
+  const key = await crypto.subtle.importKey(
     'raw',
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${nonce}|${secretOrKey}`))),
     'AES-GCM',
@@ -445,7 +482,7 @@ async function verifyWinnerSegments(src, minDurationSec = 0) {
     }
     return true;
   }
-  if (!/#EXT/i.test(childProbe.body || '').slice(0, 300)) return true;
+  if (!/#EXT/i.test(String(childProbe.body || '').slice(0, 300))) return true;
   const variant = await fetchFull(childUrl, src.referer, src.origin);
   if (!variant.ok) return true;
   if (!checkDuration(variant.body, variant.complete, childUrl)) return false;
@@ -509,18 +546,342 @@ async function probeStreamPlayable(src) {
   }
 }
 
+// ---- meowtv ----
+// api.meowtv.ru: POST /streams/ticket -> GET /streams/{type}/{id}?s={server}
+// -> POST enc-dec.app/api/dec-meowtv. Only some servers hold a title (410
+// otherwise) — the race + dead-marks own that. Ticket cached 4 min.
+const MEOWTV_DECODER = 'https://enc-dec.app/api/dec-meowtv';
+const MEOWTV_TICKET_TTL_MS = 4 * 60 * 1000;
+let meowtvTicket = null; // { value, exp }
+
+async function getMeowtvTicket(env) {
+  if (meowtvTicket && meowtvTicket.exp > Date.now()) return meowtvTicket.value;
+  const ticket = await postJson(`${meowApi(env)}/streams/ticket`, undefined, {
+    Origin: meowOrigin(env),
+    Referer: meowReferer(env),
+    'User-Agent': STREAM_UA,
+  });
+  const value = ticket && ticket.ticket;
+  if (!value) throw new Error('meowtv: no ticket');
+  meowtvTicket = { value, exp: Date.now() + MEOWTV_TICKET_TTL_MS };
+  return value;
+}
+
+async function fetchMeowtvProvider(env, provider, type, id, season, episode) {
+  const slug = provider.slug || provider.name;
+  let url = `${meowApi(env)}/streams/${type}/${id}`;
+  if (type === 'tv') url += `/${season}/${episode}`;
+  url += `?s=${encodeURIComponent(slug)}`;
+  try {
+    const ticket = await getMeowtvTicket(env);
+    const data = await fetchJSON(url, {
+      headers: { Origin: meowOrigin(env), Referer: meowReferer(env), 'User-Agent': STREAM_UA, 'X-Stream-Ticket': ticket },
+    });
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+    let dec;
+    try {
+      const r = await fetch(MEOWTV_DECODER, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data }),
+        signal: ctrl.signal,
+      });
+      dec = await r.json();
+    } finally {
+      clearTimeout(t);
+    }
+    if (!dec || dec.status !== 200 || !dec.result) throw new Error(`meowtv ${provider.name}: decoder ${dec && dec.status}`);
+    return dec.result;
+  } catch (err) {
+    const status = err.status || '';
+    if (status === 401 || status === 403) meowtvTicket = null;
+    throw new Error(`meowtv ${provider.name} ${status || err.message}`);
+  }
+}
+
+function meowtvToResult(provider, data) {
+  if (!data || !data.url) return { provider: provider.name, sources: [], subtitles: [] };
+  const url = String(data.url);
+  const headers = data.headers && Object.keys(data.headers).length ? data.headers : null;
+  const source = {
+    url,
+    quality: data.quality || data.resolution || data.language || 'auto',
+    isM3U8: /\.m3u8($|\?)|\/hls/i.test(url),
+    headers,
+    referer: (headers && (headers.Referer || headers.referer)) || null,
+    origin: (headers && (headers.Origin || headers.origin)) || null,
+    lang: data.language || null,
+    dub: data.language || null,
+  };
+  return { provider: provider.name, sources: [source], subtitles: [] };
+}
+
+export async function resolveMeowtv(env, { type, id, season, episode, server }) {
+  if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
+  const ALL = meowProviders(env);
+  if (server) {
+    const provider = ALL.find((candidate) => candidate.name === String(server).toLowerCase());
+    if (!provider) throw new Error(`Unknown meowtv server '${server}'`);
+    return meowtvToResult(provider, await fetchMeowtvProvider(env, provider, type, id, season, episode));
+  }
+  const key = titleKey(type, id, season, episode);
+  const cachedName = meowtvCache.get(key);
+  const cached = cachedName && ALL.find((candidate) => candidate.name === cachedName);
+  const order = (cached ? [cached, ...ALL.filter((p) => p.name !== cached.name)] : ALL).filter((p) => !isDead('meowtv', p, key));
+  let lastError = null;
+  const settled = await Promise.allSettled(
+    order.map((p) => fetchMeowtvProvider(env, p, type, id, season, episode).then((payload) => meowtvToResult(p, payload)))
+  );
+  for (let i = 0; i < order.length; i++) {
+    const outcome = settled[i];
+    if (outcome.status === 'rejected') {
+      lastError = outcome.reason;
+      markDead('meowtv', order[i], key);
+      continue;
+    }
+    if (!outcome.value.sources.length) continue;
+    meowtvCache.set(key, order[i].name);
+    return outcome.value;
+  }
+  throw new Error(`No meowtv source found${lastError ? ` (${lastError.message})` : ''}`);
+}
+
+export async function fetchMeowtvSubtitles(env, type, id, season, episode) {
+  let url = `${meowApi(env)}/subs/${type}/${id}`;
+  if (type === 'tv') url += `/${season}/${episode}`;
+  try {
+    const raw = await fetchJSON(url, {
+      headers: { Origin: meowOrigin(env), Referer: meowReferer(env), 'User-Agent': STREAM_UA },
+      timeout: 3000,
+    });
+    return (Array.isArray(raw) ? raw : [])
+      .map((s) => ({ url: s.file || s.url || s.src, label: s.label || s.language || 'Unknown', lang: s.label || null }))
+      .filter((s) => s.url);
+  } catch {
+    return [];
+  }
+}
+
+// ---- byse ----
+// 0123movie.space maps TMDB -> an embed code, then the byse player gates the
+// stream behind: P-256 device attestation -> PoW captcha -> AES-GCM playback
+// config. All crypto runs on WebCrypto here (same as the browser bundle).
+//
+// NOTE: byse is offered as a FORCED server on the edge (?server=byse), not in
+// the automatic race. Its hashcash PoW is CPU-bound and Workers free-plan CPU
+// limits are tight; racing it on every /sources could trip the isolate. The
+// Node/Vercel deployment races it normally.
+const BYSE_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+const BYSE_POW_BLOCKS = 512;
+const BYSE_POW_MASK = BYSE_POW_BLOCKS - 1;
+const BYSE_POW_ROUNDS = 2;
+const BYSE_POW_MUL_A = 2654435761;
+const BYSE_POW_MUL_B = 2246822519;
+const byseRot = (v, s) => (v << s | v >>> (32 - s)) >>> 0;
+function byseMix(st) {
+  st[0] = (st[0] + st[1]) >>> 0; st[3] = byseRot(st[3] ^ st[0], 16);
+  st[2] = (st[2] + st[3]) >>> 0; st[1] = byseRot(st[1] ^ st[2], 12);
+  st[0] = (st[0] + st[1]) >>> 0; st[3] = byseRot(st[3] ^ st[0], 8);
+  st[2] = (st[2] + st[3]) >>> 0; st[1] = byseRot(st[1] ^ st[2], 7);
+}
+function bysePowHash(bytes) {
+  const st = new Uint32Array([1779033703, 3144134277, 1013904242, 2773480762]);
+  for (let i = 0; i < bytes.length; i++) { st[0] = (st[0] + bytes[i]) >>> 0; st[0] = byseRot(st[0], 7); byseMix(st); }
+  for (let i = 0; i < 8; i++) byseMix(st);
+  const table = new Uint32Array(BYSE_POW_BLOCKS);
+  for (let i = 0; i < BYSE_POW_BLOCKS; i++) { byseMix(st); table[i] = (st[0] ^ st[2]) >>> 0; }
+  for (let r = 0; r < BYSE_POW_ROUNDS; r++) for (let i = 0; i < BYSE_POW_BLOCKS; i++) {
+    const ti = table[i] & BYSE_POW_MASK;
+    let v = (table[i] + table[ti]) >>> 0; v = byseRot(v, 13);
+    v = (v ^ Math.imul(table[(i + 1) & BYSE_POW_MASK], BYSE_POW_MUL_A)) >>> 0;
+    table[i] = v; st[0] = (st[0] ^ v) >>> 0; byseMix(st);
+  }
+  const out = new Uint32Array(8), width = BYSE_POW_BLOCKS / 8;
+  for (let i = 0; i < 8; i++) {
+    byseMix(st); let v = st[0];
+    for (let j = 0; j < width; j++) {
+      const tv = table[i * width + j];
+      v = (v + tv) >>> 0; v = byseRot(v, 5); v = (v ^ Math.imul(tv, BYSE_POW_MUL_B)) >>> 0;
+    }
+    out[i] = (v ^ st[2]) >>> 0;
+  }
+  return out;
+}
+function byseLatin1(s) { const o = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) o[i] = s.charCodeAt(i) & 255; return o; }
+function byseLeadingZeros(a) {
+  let total = 0;
+  for (let i = 0; i < a.length; i++) { if (a[i] === 0) { total += 32; continue; } return total + Math.clz32(a[i]); }
+  return total;
+}
+function byseSolvePow(nonce, difficulty) {
+  const prefix = `${nonce}:`;
+  for (let counter = 0; counter < 5_000_000; counter++) {
+    if (byseLeadingZeros(bysePowHash(byseLatin1(prefix + counter))) >= difficulty) return String(counter);
+  }
+  throw new Error('byse: PoW exceeded search budget');
+}
+
+async function fetchByseImdbId(env, type, id) {
+  if (!env.TMDB_API_KEY) return null;
+  try {
+    const data = await fetchJSON(`https://api.themoviedb.org/3/${type}/${id}/external_ids?api_key=${encodeURIComponent(env.TMDB_API_KEY)}`, { timeout: 4000 });
+    return (data && data.imdb_id) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchByseConfig(env, { type, id, season, episode, imdbId }) {
+  if (type === 'movie' && !imdbId) imdbId = await fetchByseImdbId(env, type, id);
+  if (type === 'movie' && !imdbId) throw new Error('byse: movie needs an imdb id');
+
+  const path = type === 'movie' ? `/mv/${imdbId}/${id}/` : `/pl/${id}/${season || 1}/${episode || 1}/`;
+  // Follow the redirect and read the final URL (the embed page) — manual
+  // redirects are opaque on Workers, response.url is reliable.
+  const role = await fetch(`${byseApi(env)}${path}`, {
+    redirect: 'follow',
+    headers: { 'User-Agent': BYSE_UA, Referer: byseReferer(env) },
+  });
+  const embedUrl = role.url;
+  const mm = String(embedUrl).match(/^(https?:\/\/[^/]+)\/e\/([^/?#]+)/);
+  if (!mm) throw new Error(`byse: unsupported embed url ${String(embedUrl).slice(0, 80)}`);
+  const origin = mm[1];
+  const code = mm[2];
+  const embedHeaders = {
+    'User-Agent': BYSE_UA,
+    Referer: embedUrl,
+    Origin: origin,
+    'X-Embed-Origin': byseApi(env),
+    'X-Embed-Referer': byseReferer(env),
+    'X-Embed-Parent': embedUrl,
+  };
+
+  await fetchJSON(`${origin}/api/videos/${code}/embed/details`, { headers: embedHeaders });
+
+  // device attestation — P-256 ECDSA over the challenge nonce
+  const { publicKey, privateKey } = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+  const publicJwk = await crypto.subtle.exportKey('jwk', publicKey);
+  const challenge = await postJson(`${origin}/api/videos/access/challenge`, undefined, { 'User-Agent': BYSE_UA });
+  const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: { name: 'SHA-256' } }, privateKey, new TextEncoder().encode(challenge.nonce));
+  const viewerId = crypto.randomUUID();
+  const deviceId = crypto.randomUUID();
+  const attested = await postJson(`${origin}/api/videos/access/attest`, {
+    viewer_id: viewerId,
+    device_id: deviceId,
+    challenge_id: challenge.challenge_id,
+    nonce: challenge.nonce,
+    signature: bytesToB64url(new Uint8Array(sig)),
+    public_key: publicJwk,
+    client: {
+      user_agent: BYSE_UA, languages: ['en-US', 'en'], timezone: 'America/New_York',
+      hardware_concurrency: 8, device_memory: 8, pixel_ratio: 1, screen_width: 1920, screen_height: 1080,
+      color_depth: 24, touch_points: 0, webdriver: false, webgl_vendor: 'Google Inc. (NVIDIA)',
+      webgl_renderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)',
+      brand_full_versions: [],
+    },
+    storage: { cookie: viewerId, local_storage: viewerId, indexed_db: `${viewerId}:${deviceId}`, cache_storage: `${viewerId}:${deviceId}` },
+    attributes: { entropy: 'medium' },
+  }, { 'User-Agent': BYSE_UA });
+  const fingerprint = {
+    token: attested.token,
+    viewer_id: attested.viewer_id || viewerId,
+    device_id: attested.device_id || deviceId,
+    confidence: attested.confidence,
+  };
+
+  const captcha = await postJson(`${origin}/api/videos/${code}/embed/captcha`, { fingerprint }, embedHeaders);
+  const solution = byseSolvePow(captcha.pow_nonce, captcha.pow_difficulty);
+  const verified = await postJson(`${origin}/api/videos/${code}/embed/captcha/verify`, { pow_token: captcha.pow_token, solution, fingerprint }, embedHeaders);
+  if (!verified || verified.status !== 'ok' || !verified.token) throw new Error('byse: captcha not verified');
+
+  const playback = await postJson(`${origin}/api/videos/${code}/embed/playback`, { fingerprint }, { ...embedHeaders, 'X-Captcha-Token': verified.token });
+  const enc = playback.playback || playback.playback_config || playback;
+  const parts = Array.isArray(enc.key_parts) ? enc.key_parts : [];
+  const ver = parseInt(String(enc.version), 10);
+  let selected = parts;
+  if (Number.isInteger(ver) && ver >= 1 && ver <= 20) {
+    const pick = [ver, 31 - ver].filter((i) => i >= 1 && i <= parts.length).map((i) => parts[i - 1]).filter((x) => typeof x === 'string' && x.length > 0);
+    if (pick.length) selected = pick;
+  }
+  const decoded = selected.map(b64urlToBytes);
+  const len = decoded.reduce((a, b) => a + b.length, 0);
+  const keyBytes = new Uint8Array(len);
+  let off = 0;
+  for (const d of decoded) { keyBytes.set(d, off); off += d.length; }
+  const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64urlToBytes(enc.iv) }, cryptoKey, b64urlToBytes(enc.payload));
+  const config = JSON.parse(new TextDecoder().decode(plain));
+  return { origin, code, embedUrl, config };
+}
+
+async function postJson(url, body, headers) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+  const hasBody = body !== undefined;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: hasBody ? { ...headers, 'Content-Type': 'application/json' } : { ...headers },
+      body: hasBody ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+    if (!r.ok) {
+      const e = new Error(`API ${r.status}`);
+      e.status = r.status;
+      throw e;
+    }
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function byseToResult(provider, resolved) {
+  const config = (resolved && resolved.config) || {};
+  const origin = resolved.origin;
+  const sources = (config.sources || [])
+    .map((s) => {
+      if (!s || !s.url) return null;
+      const mime = String(s.mime_type || '');
+      const headers = s.headers && typeof s.headers === 'object' ? s.headers : null;
+      return {
+        url: s.url,
+        quality: s.label || s.quality || (s.height ? `${s.height}p` : 'auto'),
+        isM3U8: /mpegurl|m3u8/i.test(mime) || /\.m3u8($|\?)/i.test(s.url),
+        headers,
+        referer: (headers && (headers.Referer || headers.referer)) || origin + '/',
+        origin: (headers && (headers.Origin || headers.origin)) || origin,
+        lang: s.language || null,
+        dub: s.language || null,
+      };
+    })
+    .filter(Boolean);
+  return { provider: provider.name, sources, subtitles: [] };
+}
+
+export async function resolveByse(env, { type, id, season, episode, imdbId, server }) {
+  if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
+  const ALL = byseProviders(env);
+  const provider = server ? ALL.find((c) => c.name === String(server).toLowerCase()) : ALL[0];
+  if (!provider) throw new Error(`Unknown byse provider '${server}'`);
+  return byseToResult(provider, await fetchByseConfig(env, { type, id, season, episode, imdbId }));
+}
+
 // ---- auto race: first startable stream wins ----
-async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
+async function autoRace(env, peachifyOrder, vidnestOrder, meowtvOrder, key, opts) {
   const candidates = [];
   for (const provider of peachifyOrder) candidates.push(['peachify', provider]);
   for (const provider of vidnestOrder) candidates.push(['vidnest', provider]);
+  for (const provider of meowtvOrder) candidates.push(['meowtv', provider]);
   return await new Promise((resolve) => {
     let remaining = candidates.length;
     if (!remaining) return resolve({ won: false, lastErr: {} });
     let finished = false;
     const lastErrors = {};
-    const failCounts = { peachify: 0, vidnest: 0 };
-    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length };
+    const failCounts = { peachify: 0, vidnest: 0, meowtv: 0 };
+    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length, meowtv: meowtvOrder.length };
     const finish = (outcome) => {
       if (!finished) {
         finished = true;
@@ -532,9 +893,13 @@ async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
         ? fetchProvider(env, provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
             toResult(provider, payload)
           )
-        : fetchVidnestProvider(env, provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
-            vidnestToResult(provider, payload)
-          )
+        : family === 'meowtv'
+          ? fetchMeowtvProvider(env, provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+              meowtvToResult(provider, payload)
+            )
+          : fetchVidnestProvider(env, provider, opts.type, opts.id, opts.season, opts.episode).then((payload) =>
+              vidnestToResult(provider, payload)
+            )
       )
         .then((result) => {
           healFamily(family);
@@ -559,7 +924,14 @@ async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
               if (playable) {
                 let minDurationSec;
                 try {
-                  minDurationSec = (opts.minDurationPromise && (await opts.minDurationPromise)) || undefined;
+                  // Bound the runtime-metadata wait: a wedged/aborted upstream
+                  // promise must never stall crowning on the edge.
+                  minDurationSec = opts.minDurationPromise
+                    ? await Promise.race([
+                        opts.minDurationPromise,
+                        new Promise((resolve) => setTimeout(() => resolve(undefined), 15000)),
+                      ])
+                    : undefined;
                 } catch (e) {
                   minDurationSec = undefined;
                 }
@@ -574,7 +946,7 @@ async function autoRace(env, peachifyOrder, vidnestOrder, key, opts) {
                   }
                 } else {
                   if (finished) return;
-                  (outcome.family === 'peachify' ? providerCache : vidnestCache).set(key, outcome.provider.name);
+                  (outcome.family === 'peachify' ? providerCache : outcome.family === 'meowtv' ? meowtvCache : vidnestCache).set(key, outcome.provider.name);
                   return finish({ won: true, result: outcome.result });
                 }
               }
@@ -602,6 +974,10 @@ export async function resolveStream(env, { type, id, season, episode, server, sk
     const name = String(server).toLowerCase();
     const vidnestProvider = ALL_VID.find((candidate) => candidate.name === name);
     if (vidnestProvider) return resolveVidnest(env, { type, id, season, episode, server: name });
+    const meowtvProvider = meowProviders(env).find((candidate) => candidate.name === name);
+    if (meowtvProvider) return resolveMeowtv(env, { type, id, season, episode, server: name });
+    const byseProvider = byseProviders(env).find((candidate) => candidate.name === name);
+    if (byseProvider) return resolveByse(env, { type, id, season, episode, server: name });
     const provider = ALL_PEACH.find((candidate) => candidate.name === name || candidate.path === name);
     if (!provider) throw new Error(`Unknown provider '${server}'`);
     const data = await fetchProvider(env, provider, type, id, season, episode);
@@ -619,7 +995,13 @@ export async function resolveStream(env, { type, id, season, episode, server, sk
   const vidnestOrder = (cachedVidnest ? [cachedVidnest, ...ALL_VID.filter((provider) => provider.name !== cachedVidnest.name)] : ALL_VID).filter(
     (provider) => !skipSet.has(provider.name) && !familyDown('vidnest') && !isDead('vidnest', provider, key)
   );
-  const outcome = await autoRace(env, peachifyOrder, vidnestOrder, key, { type, id, season, episode, minDurationPromise });
+  const ALL_MEOW = meowProviders(env);
+  const cachedMeowtvName = meowtvCache.get(key);
+  const cachedMeowtv = cachedMeowtvName && ALL_MEOW.find((candidate) => candidate.name === cachedMeowtvName);
+  const meowtvOrder = (cachedMeowtv ? [cachedMeowtv, ...ALL_MEOW.filter((p) => p.name !== cachedMeowtv.name)] : ALL_MEOW).filter(
+    (provider) => !skipSet.has(provider.name) && !familyDown('meowtv') && !isDead('meowtv', provider, key)
+  );
+  const outcome = await autoRace(env, peachifyOrder, vidnestOrder, meowtvOrder, key, { type, id, season, episode, minDurationPromise });
   if (outcome.won) return outcome.result;
   return { provider: null, sources: [], subtitles: [] };
 }
