@@ -15,7 +15,7 @@ const browseRoutes = require('./routes/browse');
 const embedRoutes = require('./routes/embed');
 const streamRoutes = require('./routes/stream');
 const downloadRoutes = require('./routes/download');
-const fojikRoutes = require('./routes/fojik');
+const animeRoutes = require('./routes/anime');
 
 const app = express();
 const tmdb = new TMDBService();
@@ -97,6 +97,70 @@ app.get(PRECOMPRESS.map((p) => '/' + p), (req, res) => {
 // 2. Health check (exempt from rate limiter and logging overhead)
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: Math.round(process.uptime()), ts: Date.now() });
+});
+
+// 2b. Upstream routing introspection — the self-healing dashboard endpoint.
+//   GET /health/upstreams             -> config version, families, provider
+//      names, live breaker state (no secrets, no keys, no alphabets).
+//   GET /health/upstreams?refresh=1   -> re-read config/upstreams.json +
+//      UPSTREAMS_JSON env WITHOUT a restart (hot-patch a renamed host/slug,
+//      then hit this once; the next /sources race uses the new table).
+//   GET /health/upstreams?probe=1     -> actually race the canary titles
+//      through resolveStream (movie/550 + Breaking Bad S1E1). Slower (~2-10s)
+//      but proves end-to-end playability, not just config presence.
+app.get('/health/upstreams', async (req, res) => {
+  try {
+    const { loadUpstreams, getBreakerSnapshot } = require('./services/upstreams');
+    const ext = require('./services/extractor');
+    if (req.query.refresh === '1' || req.query.reload === '1') {
+      if (typeof ext.refreshUpstreamConsts === 'function') ext.refreshUpstreamConsts();
+      else loadUpstreams({ reload: true });
+    }
+    const table = loadUpstreams();
+    const fams = {};
+    for (const [name, fam] of Object.entries(table.families || {})) {
+      fams[name] = {
+        api: fam.api,
+        referer: fam.referer ? '(set)' : '(missing)',
+        providers: (fam.providers || []).map((p) => p.name),
+        count: (fam.providers || []).length,
+      };
+    }
+    const out = {
+      ok: true,
+      version: table.version,
+      ts: Date.now(),
+      uptime: Math.round(process.uptime()),
+      families: fams,
+      breakers: getBreakerSnapshot(),
+      envOverride: Boolean(process.env.UPSTREAMS_JSON),
+      canary: table.canary || {},
+    };
+    if (req.query.probe === '1') {
+      const probeOne = async (c) => {
+        if (!c || !c.type || !c.id) return { skipped: true };
+        const t0 = Date.now();
+        try {
+          const r = await ext.resolveStream({
+            type: c.type, id: String(c.id),
+            season: String(c.season || '1'), episode: String(c.episode || '1'),
+          });
+          return {
+            ok: (r.sources || []).length > 0, provider: r.provider || null,
+            sources: (r.sources || []).length, ms: Date.now() - t0,
+          };
+        } catch (e) {
+          return { ok: false, error: e.message, ms: Date.now() - t0 };
+        }
+      };
+      const [movie, tv] = await Promise.all([probeOne(table.canary.movie), probeOne(table.canary.tv)]);
+      out.probe = { movie, tv };
+      out.ok = Boolean((movie && movie.ok) || (tv && tv.ok));
+    }
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 // 3. SSR: pre-render the home view for instant first paint.
@@ -270,7 +334,7 @@ app.use(
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 600,
-  skip: (req) => req.path.startsWith('/play') || req.path.startsWith('/download') || req.path.startsWith('/api/fojik'),
+  skip: (req) => req.path.startsWith('/play') || req.path.startsWith('/download'),
 });
 app.use(limiter);
 
@@ -293,7 +357,7 @@ app.use(browseRoutes(tmdb));
 app.use(embedRoutes(tmdb));
 app.use(streamRoutes());
 app.use(downloadRoutes());
-app.use(fojikRoutes()); // local-only Fojik bridge (JSON only, never proxies bytes)
+app.use(animeRoutes()); // separate anime section (AniList + Megaplay, no TMDB)
 
 // 8. SPA fallback
 app.use((req, res, next) => {

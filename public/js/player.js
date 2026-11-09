@@ -40,11 +40,15 @@ const Player = (() => {
     try {
       const u = new URL(url);
       if (CORS_OPEN_HOSTS.some((h) => u.hostname.endsWith(h))) return true;
-      if (src && !src.isM3U8 && !src.referer && !src.origin && /\.(mp4|mkv|webm|m4v)($|\?)/i.test(u.pathname + u.search)) return true;
+      // Progressive mp4/mkv WITHOUT referer used to load browser-direct too,
+      // but our WebAudio volume boost taints any cross-origin media element
+      // that was NOT loaded as a CORS request — video plays with NO audio.
+      // Unknown-ACAO hosts therefore must ride the proxy (it always sets
+      // ACAO:* and the <video> element carries crossorigin="anonymous").
+      return false;
     } catch (e) {
       return false;
     }
-    return false;
   }
 
   // Direct CDNs need our /play proxy (referer + CORS); CORS-open hosts play

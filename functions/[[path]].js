@@ -100,6 +100,28 @@ export async function onRequest({ request, env, params, next, waitUntil }) {
       return json({ ok: true, edge: 'cinephile-areana', ts: Date.now() });
     }
 
+    // ---- health/upstreams: routing introspection (mirrors Express
+    // /health/upstreams minus the live probe — edge isolates are stateless
+    // so breakers aren't meaningful here; config + env override are).
+    // No secrets: referers shown as (set)/(missing), never values.
+    if (seg.length === 2 && a === 'health' && b === 'upstreams') {
+      const { loadUpstreams } = await import('./lib/upstreams.js');
+      const table = loadUpstreams(env);
+      const fams = {};
+      for (const [name, fam] of Object.entries(table.families || {})) {
+        fams[name] = {
+          api: fam.api,
+          referer: fam.referer ? '(set)' : '(missing)',
+          providers: (fam.providers || []).map((p) => p.name),
+          count: (fam.providers || []).length,
+        };
+      }
+      return json({
+        ok: true, edge: 'cinephile-areana', version: table.version, ts: Date.now(),
+        families: fams, envOverride: Boolean(env.UPSTREAMS_JSON), canary: table.canary || {},
+      });
+    }
+
     // ---- sign: mint a signed proxy URL (subtitle tracks; same-origin only,
     // no ACAO header). No strict per-IP cap here — Pages has no durable
     // counters; the 2h expiry + origin check carry the protection.
@@ -243,6 +265,45 @@ export async function onRequest({ request, env, params, next, waitUntil }) {
       return cachedJson(request, ctx, 3600, async () =>
         api.fetchTopIMDB(q.get('type') || 'all', parseInt(q.get('page') || '1', 10), mv ? parseFloat(mv) : undefined)
       );
+    }
+
+    // ---- anime: separate catalog (AniList ids + Megaplay MAL streams) ----
+    if (a === 'anime') {
+      const anime = await import('./lib/anime.js');
+      const page = Math.max(1, parseInt(q.get('page') || '1', 10) || 1);
+      if (b === 'trending' && seg.length === 2) {
+        return await cachedJson(request, ctx, 1800, async () => anime.trending(page));
+      }
+      if (b === 'popular' && seg.length === 2) {
+        return await cachedJson(request, ctx, 1800, async () => anime.popular(page));
+      }
+      if (b === 'top' && seg.length === 2) {
+        return await cachedJson(request, ctx, 1800, async () => anime.topRated(page));
+      }
+      if (b === 'upcoming' && seg.length === 2) {
+        return await cachedJson(request, ctx, 1800, async () => anime.trending(page));
+      }
+      if (b === 'search' && seg.length === 2) {
+        const term = String(q.get('q') || '').trim();
+        if (!term) return json([]);
+        return await cachedJson(request, ctx, 600, async () => anime.search(term, page));
+      }
+      if (b === 'info' && seg.length === 3) {
+        if (!/^\d+$/.test(c)) return err('invalid anime id', 400);
+        return await cachedJson(request, ctx, 1800, async () => anime.info(c));
+      }
+      if (b === 'sources' && seg.length === 3) {
+        const malId = c;
+        if (!/^\d+$/.test(malId)) return err('invalid mal id', 400);
+        const episode = parseInt(q.get('ep') || '1', 10) || 1;
+        const dub = q.get('dub') === '1' || q.get('dub') === 'true';
+        try {
+          return json(await anime.resolveSources({ malId, episode, dub }));
+        } catch (e) {
+          return json({ url: null, isM3U8: false, subtitles: [], intro: null, outro: null, error: e.message });
+        }
+      }
+      return err('Unknown anime path', 404);
     }
 
     // ---- embed ----

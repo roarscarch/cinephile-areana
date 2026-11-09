@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { TvType } = require('../utils/constants');
-const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, signPlayUrl } = require('./extractor');
+const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, getProviders, getVidnestProviders, getByseProviders, signPlayUrl } = require('./extractor');
 const { fetchEnglishSubtitles } = require('./subtitles'); // primary English subtitle source
 const { httpAgent, httpsAgent } = require('../utils/http');
 
@@ -11,10 +11,12 @@ if (!TMDB_API_KEY) {
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 
-// Stream servers = peachify's internal providers (Horizon/Wolf/Spider/Multi/Iron)
-// plus vidnest's (Videasy/HollyMovie/Rogflix/Buzz/NGC). Each is a direct JSON
-// API — no scraping, no browser. resolveStream dispatches by name.
-const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS];
+// Stream servers = live config providers (config/upstreams.json). Read fresh
+// on every call — never a boot-time snapshot — so a hot-patched upstream
+// rename shows up in /servers immediately, without a restart.
+function SERVERS() {
+  return [...getProviders(), ...getVidnestProviders(), ...getByseProviders()];
+}
 
 // Subtitle lookups are ENRICHMENT, never a playback gate: race them against a
 // short deadline and serve whatever landed ([] on overrun). The underlying
@@ -231,7 +233,7 @@ class CinephileHQ {
   // ---- servers & sources ----
 
   async fetchEpisodeServers() {
-    return SERVERS.map((server) => ({ name: server.name }));
+    return SERVERS().map((server) => ({ name: server.name }));
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {
@@ -348,7 +350,13 @@ class CinephileHQ {
       }
       return 900;
     }).catch(() => undefined);
-    const stream = await resolveStream({ type, id, season, episode, server, skip, minDurationPromise });
+    // IMDb id feeds the byse family's movie route (0123movie.space /mv/{imdb}/{tmdb});
+    // resolved in parallel so it costs nothing on the vidnest hot path.
+    const imdbIdPromise = this.fetchMediaInfo(mediaId)
+      .then((info) => (info && info.imdbId) || undefined)
+      .catch(() => undefined);
+    const imdbId = await imdbIdPromise;
+    const stream = await resolveStream({ type, id, season, episode, server, skip, minDurationPromise, imdbId });
 
     // Pre-sign proxy URLs so the Worker can reject hotlinkers. Unsigned
     // fallback stays working while PLAY_SIGNING_KEY is unset or the Worker
@@ -370,7 +378,8 @@ class CinephileHQ {
   }
 
   async fetchMovieEmbedLinks(movieId, serverName = null) {
-    const servers = serverName ? SERVERS.filter((server) => server.name === serverName) : SERVERS;
+    const all = SERVERS();
+    const servers = serverName ? all.filter((server) => server.name === serverName) : all;
     const results = [];
     for (const server of servers) {
       try {
@@ -396,7 +405,8 @@ class CinephileHQ {
     if (!m) throw new Error('episodeId must be tvId:s{e} e.g. 1396:1-3');
     const [, season, episode] = m;
 
-    const servers = serverName ? SERVERS.filter((server) => server.name === serverName) : SERVERS;
+    const all = SERVERS();
+    const servers = serverName ? all.filter((server) => server.name === serverName) : all;
     const results = [];
     for (const server of servers) {
       try {

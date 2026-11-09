@@ -78,7 +78,7 @@ export default {
     }
 
     // Only forward known API shapes; anything else is not ours to serve.
-    const KNOWN = /^\/(?:search|info|sources|servers|subtitles|dubs|recent|trending|movies|tv|genre|top-imdb|movie\/embed|tv\/embed)(?:\/|\?|$)/;
+    const KNOWN = /^\/(?:anime|search|info|sources|servers|subtitles|dubs|recent|trending|movies|tv|genre|top-imdb|movie\/embed|tv\/embed)(?:\/|\?|$)/;
     if (!KNOWN.test(url.pathname)) {
       return new Response(JSON.stringify({ error: 'Unknown API path' }), {
         status: 404,
@@ -89,12 +89,15 @@ export default {
     const BACKENDS = backends(env);
     const order = [lastGood, ...BACKENDS.map((_, i) => i).filter((i) => i !== lastGood)];
     let lastErr = null;
+    let notFound = null; // a 404 may just mean this mirror predates the route
     for (const i of order) {
       try {
         const upstream = await fetchWithTimeout(`${BACKENDS[i]}${url.pathname}${url.search}`, UPSTREAM_TIMEOUT_MS);
         // 2xx/4xx are definitive (a 400 fails on the mirror too) — return.
-        // 5xx/429 may succeed on the mirror — try next.
-        if (upstream.ok || (upstream.status !== 429 && upstream.status < 500)) {
+        // 5xx/429 may succeed on the mirror — try next. A 404 is also retried
+        // (one deployment can lag a new route), but remembered for the final
+        // answer if every backend says not-found.
+        if (upstream.ok || (upstream.status !== 429 && upstream.status < 500 && upstream.status !== 404)) {
           lastGood = i;
           const headers = new Headers();
           const ct = upstream.headers.get('content-type');
@@ -105,10 +108,18 @@ export default {
           headers.set('X-Backend', BACKENDS[i]);
           return new Response(upstream.body, { status: upstream.status, headers });
         }
+        if (upstream.status === 404 && !notFound) notFound = upstream;
         lastErr = new Error(`backend ${i}: ${upstream.status}`);
       } catch (e) {
         lastErr = e;
       }
+    }
+    if (notFound) {
+      const headers = new Headers();
+      const ct = notFound.headers.get('content-type');
+      if (ct) headers.set('Content-Type', ct);
+      headers.set('Access-Control-Allow-Origin', '*');
+      return new Response(notFound.body, { status: 404, headers });
     }
     return new Response(JSON.stringify({ error: `All backends failed (${(lastErr && lastErr.message) || 'unknown'})` }), {
       status: 502,

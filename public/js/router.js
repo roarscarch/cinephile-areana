@@ -12,7 +12,7 @@
   const SHARE_ORIGIN = 'https://cinephilia-vercel.vercel.app';
   // Markup helpers live in render.js — shared with the server's SSR pass so
   // pre-rendered HTML and client-rendered HTML can never drift apart.
-  const { card, grid, skeletonRow, rowWithArrows, escapeHtml, homeView, TYPE_LABEL } = Render;
+  const { card, animeCard, grid, skeletonRow, rowWithArrows, escapeHtml, homeView, TYPE_LABEL } = Render;
 
   // ---------------- helpers ----------------
   function el(html) {
@@ -608,6 +608,353 @@
     loadPage();
   };
 
+  // ---- anime (separate section: AniList metadata + Megaplay streams) ----
+  let animeHls = null;
+  function destroyAnimeHls() {
+    if (animeHls) {
+      try { animeHls.destroy(); } catch (e) {}
+      animeHls = null;
+    }
+  }
+  function stripTags(html) {
+    return String(html || '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+  }
+  // Route anime media through /play with the Megaplay referer the CDN requires.
+  // Relative /play stays same-origin (works on the Vercel/Worker deployments
+  // too — stream.js 302s to the Worker when PLAY_PROXY_BASE is configured).
+  function animePlayUrl(src, url) {
+    if (!url || url.startsWith('/')) return url;
+    const params = new URLSearchParams({ ref: (src && src.referer) || 'https://megaplay.buzz/' });
+    if (src && src.origin) params.set('origin', src.origin);
+    params.set('url', url);
+    return `/play?${params.toString()}`;
+  }
+  // Subtitle blob lifecycle: revoke prior object URLs whenever a new episode
+  // loads so repeated navigation doesn't leak memory.
+  let animeSubBlobs = [];
+  function clearAnimeSubs(video, select) {
+    animeSubBlobs.forEach((u) => { try { URL.revokeObjectURL(u); } catch (e) {} });
+    animeSubBlobs = [];
+    [...video.querySelectorAll('track')].forEach((t) => t.remove());
+    if (select) select.innerHTML = '<option value="">Subtitles: Off</option>';
+  }
+  // Fetch each VTT through /play, wrap as text/vtt, and attach one <track> per
+  // language. Runs async after playback begins.
+  async function setupAnimeSubs(src, video, select) {
+    clearAnimeSubs(video, select);
+    const list = (src.subtitles || []).slice(0, 12);
+    if (!list.length) return;
+    const fetched = await Promise.all(
+      list.map(async (s) => {
+        try {
+          const res = await fetch(animePlayUrl(src, s.url));
+          if (!res.ok) return null;
+          const text = await res.text();
+          if (!/^\uFEFF?WEBVTT/i.test(text.slice(0, 24).trim())) return null;
+          const blobUrl = URL.createObjectURL(new Blob([text], { type: 'text/vtt' }));
+          animeSubBlobs.push(blobUrl);
+          return { label: s.label, lang: s.lang, blobUrl, isDefault: Boolean(s.default) };
+        } catch (e) {
+          return null;
+        }
+      })
+    );
+    const good = fetched.filter(Boolean);
+    if (!video.isConnected) return;
+    good.forEach((s, i) => {
+      const track = document.createElement('track');
+      track.kind = 'subtitles';
+      track.label = s.label || `Track ${i + 1}`;
+      track.srclang = String(s.lang || s.label || 'en').slice(0, 2).toLowerCase();
+      track.src = s.blobUrl;
+      video.appendChild(track);
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = s.label || `Track ${i + 1}`;
+      select.appendChild(opt);
+    });
+    select.onchange = () => {
+      const idx = parseInt(select.value, 10);
+      [...video.textTracks].forEach((tt, i) => (tt.mode = i === idx ? 'showing' : 'disabled'));
+    };
+    const def = good.findIndex((s) => s.isDefault);
+    if (def >= 0) {
+      select.value = String(def);
+      select.onchange();
+    }
+  }
+
+  views.anime = async (params) => {
+    scrollTop();
+    setActiveNav('anime');
+    const q = String((params && params.q) || '').trim();
+
+    view.innerHTML = `
+      <div class="page-head">
+        <h1>Anime</h1>
+        <p>Sub &amp; dub — a catalog of its own, separate from movies &amp; TV</p>
+        <form class="anime-search" id="animeSearchForm" autocomplete="off">
+          <input id="animeSearchInput" type="search" placeholder="Search anime…" value="${escapeHtml(q)}" />
+        </form>
+      </div>
+      <div id="animeBody">
+        ${q
+          ? `<div class="section"><div class="section-head"><h2>Results for “${escapeHtml(q)}”</h2></div><div class="grid" id="animeResults">${'<div class="skel" style="aspect-ratio:2/3"></div>'.repeat(12)}</div></div>`
+          : ['trending:Trending Anime', 'popular:Popular Anime', 'top:Top Rated Anime']
+              .map((spec) => {
+                const [kind] = spec.split(':');
+                const label = spec.split(':')[1];
+                return `<section class="section" data-anime-row="${kind}"><div class="section-head"><h2>${label}</h2></div>${rowWithArrows(skeletonRow())}</section>`;
+              })
+              .join('')}
+      </div>`;
+
+    const form = view.querySelector('#animeSearchForm');
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const term = view.querySelector('#animeSearchInput').value.trim();
+      location.hash = term ? `#/anime?q=${encodeURIComponent(term)}` : '#/anime';
+    });
+
+    const fillRow = (kind, items) => {
+      const section = view.querySelector(`.section[data-anime-row="${kind}"]`);
+      if (!section || !items || !items.length) return;
+      section.querySelector('.row-wrap').outerHTML = rowWithArrows(items.slice(0, 14).map(animeCard).join(''));
+      bindRowArrows(view);
+      bindCards(view);
+    };
+
+    if (q) {
+      try {
+        const items = await API.anime.search(q);
+        const results = view.querySelector('#animeResults');
+        if (!results) return;
+        results.outerHTML = items.length
+          ? `<div class="grid">${items.map(animeCard).join('')}</div>`
+          : `<div class="empty"><div class="big">🔍</div><h3>No anime found</h3><p>Try a different title.</p></div>`;
+        bindCards(view);
+      } catch (e) {
+        const results = view.querySelector('#animeResults');
+        if (results) results.outerHTML = `<div class="empty"><h3>Search failed</h3><p>${escapeHtml(e.message)}</p></div>`;
+      }
+      return;
+    }
+
+    const loaders = [
+      ['trending', () => API.anime.trending()],
+      ['popular', () => API.anime.popular()],
+      ['top', () => API.anime.top()],
+    ];
+    await Promise.all(
+      loaders.map(async ([kind, load]) => {
+        try {
+          fillRow(kind, await load());
+        } catch (e) {
+          console.warn('anime row', kind, e);
+        }
+      })
+    );
+  };
+
+  views.animeDetail = async (params) => {
+    const id = params.id;
+    scrollTop();
+    setActiveNav('anime');
+    view.innerHTML = `
+      <div class="detail-hero">
+        <div class="detail-bg"></div>
+        <div class="detail-main">
+          <div class="detail-poster skel"></div>
+          <div class="detail-info">
+            <h1><span class="skel" style="display:inline-block;height:34px;width:340px;max-width:80%"></span></h1>
+            <div class="detail-meta"><span class="skel" style="height:24px;width:160px"></span></div>
+          </div>
+        </div>
+      </div>`;
+
+    let info;
+    try {
+      info = await API.anime.info(id);
+    } catch (e) {
+      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this anime</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="#/anime">Back to anime</a></div>`;
+      return;
+    }
+
+    const episodes = info.episodes || 0;
+    const recs = info.recommendations || [];
+    view.innerHTML = `
+      <div class="detail-hero">
+        <div class="detail-bg" style="background-image:url(${(info.banner || info.image || '').replace(/"/g, '')})"></div>
+        <div class="detail-main">
+          <div class="detail-poster">${info.image ? `<img src="${info.image}" alt="${escapeHtml(info.title)}"/>` : ''}</div>
+          <div class="detail-info">
+            <h1>${escapeHtml(info.title)}</h1>
+            <div class="detail-meta">
+              ${info.rating ? `<span class="chip-static rating">★ ${Number(info.rating).toFixed(1)}</span>` : ''}
+              ${info.year ? `<span class="chip-static">${escapeHtml(String(info.year))}</span>` : ''}
+              ${info.format ? `<span class="chip-static">${escapeHtml(String(info.format).replace(/_/g, ' '))}</span>` : ''}
+              ${episodes ? `<span class="chip-static">${episodes} episodes</span>` : ''}
+              ${info.status ? `<span class="chip-static">${escapeHtml(String(info.status).replace(/_/g, ' '))}</span>` : ''}
+              ${(info.genres || []).map((g) => `<span class="chip-static">${escapeHtml(g)}</span>`).join('')}
+            </div>
+            <p class="detail-desc">${escapeHtml(stripTags(info.description) || 'No description available.')}</p>
+            <div class="play-actions">
+              <button class="btn btn-primary" id="animePlay">Watch now</button>
+              <a class="btn" href="#/anime">← All anime</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      ${episodes ? `
+        <div class="section">
+          <div class="season-bar"><h3>Episodes</h3></div>
+          <div class="episodes" id="animeEpisodes"></div>
+        </div>` : ''}
+      ${recs.length ? `
+        <div class="section">
+          <div class="section-head"><h2>More like this</h2></div>
+          ${rowWithArrows(recs.slice(0, 14).map(animeCard).join(''))}
+        </div>` : ''}`;
+
+    bindRowArrows(view);
+    bindCards(view);
+
+    view.querySelector('#animePlay').addEventListener('click', () => {
+      location.hash = `#/anime-watch/${id}/1`;
+    });
+
+    if (episodes) {
+      const epGrid = view.querySelector('#animeEpisodes');
+      const cap = Math.min(episodes, 300);
+      let html = '';
+      for (let n = 1; n <= cap; n++) {
+        html += `<div class="episode" data-href="#/anime-watch/${id}/${n}">
+          <div class="ep-thumb" style="background:linear-gradient(135deg,var(--surface-2),var(--surface))"></div>
+          <div class="ep-body"><div class="ep-title">Episode ${n}</div><div class="ep-num">E${n}</div></div>
+        </div>`;
+      }
+      epGrid.innerHTML = html;
+      epGrid.querySelectorAll('.episode').forEach((episodeEl) =>
+        episodeEl.addEventListener('click', () => (location.hash = episodeEl.dataset.href))
+      );
+    }
+  };
+
+  views.animeWatch = async (params) => {
+    const id = params.id;
+    const ep = Math.max(1, parseInt(params.ep, 10) || 1);
+    let dub = params.dub === '1' || params.dub === true;
+    scrollTop();
+    setActiveNav('anime');
+    destroyAnimeHls();
+
+    let info = null;
+    try {
+      info = await API.anime.info(id);
+    } catch (e) {}
+    const title = info ? info.title : 'Anime';
+    const malId = info ? info.malId : null;
+    const totalEpisodes = (info && info.episodes) || 0;
+
+    view.innerHTML = `
+      <div class="watch">
+        <div class="watch-head">
+          <a class="back" href="#/anime/${id}">← Back to anime</a>
+          <h1>${escapeHtml(title)}</h1>
+          <span class="sub">Episode ${ep}</span>
+        </div>
+        <div class="player-shell">
+          <video controls autoplay playsinline crossorigin="anonymous"></video>
+          <div class="player-loading"><div class="spinner"></div><div class="pl-text">Finding stream…</div></div>
+          <div class="player-error" hidden><div style="font-size:2rem">⚠️</div><div class="pe-msg"></div></div>
+          <button class="skip-intro" hidden>Skip intro</button>
+          ${ep + 1 <= (totalEpisodes || Infinity) ? `<button class="next-ep" id="animeNext">▶ Next episode</button>` : ''}
+        </div>
+        <div class="player-bar" id="animeBar">
+          <button class="subs-select ctl-btn" id="animeAudio">Audio: ${dub ? 'Dub' : 'Sub'}</button>
+          ${totalEpisodes ? `<select class="subs-select" id="animeEpSelect">${Array.from({ length: Math.min(totalEpisodes, 300) }, (_, i) => `<option value="${i + 1}" ${i + 1 === ep ? 'selected' : ''}>Episode ${i + 1}</option>`).join('')}</select>` : ''}
+          <select class="subs-select" id="animeSubsSelect"><option value="">Subtitles: Off</option></select>
+        </div>
+      </div>`;
+
+    const video = view.querySelector('video');
+    const shell = view.querySelector('.player-shell');
+    const loadingEl = shell.querySelector('.player-loading');
+    const errorEl = shell.querySelector('.player-error');
+    const skipBtn = shell.querySelector('.skip-intro');
+    const audioBtn = view.querySelector('#animeAudio');
+    const subsSelect = view.querySelector('#animeSubsSelect');
+    const nextBtn = view.querySelector('#animeNext');
+    const epSelect = view.querySelector('#animeEpSelect');
+
+    const showError = (msg) => {
+      loadingEl.style.display = 'none';
+      errorEl.hidden = false;
+      errorEl.querySelector('.pe-msg').textContent = msg;
+    };
+
+    async function load(useDub) {
+      destroyAnimeHls();
+      loadingEl.style.display = '';
+      errorEl.hidden = true;
+      skipBtn.hidden = true;
+      if (!malId) return showError('This anime has no MAL id — cannot resolve streams.');
+
+      let src = null;
+      try {
+        src = await API.anime.sources(malId, ep, useDub);
+      } catch (e) {
+        src = null;
+      }
+      if (!src || !src.url) {
+        if (useDub) return load(false); // no dub → fall back to sub
+        return showError('No stream available for this episode.');
+      }
+      audioBtn.textContent = `Audio: ${src.voice === 'dub' ? 'Dub' : 'Sub'}`;
+      dub = src.voice === 'dub';
+
+      // Subtitles are decoration: load them AFTER playback starts so a slow
+      // VTT CDN never delays the first frame. Fetched through /play (the host
+      // is Referer-gated) then re-wrapped as text/vtt blobs — the upstream
+      // serves application/octet-stream, which browsers refuse for <track>.
+      setupAnimeSubs(src, video, subsSelect);
+
+      // Intro skip (Megaplay gives seconds).
+      const intro = src.intro;
+      if (intro && Number.isFinite(intro.end) && intro.end > (intro.start || 0)) {
+        skipBtn.hidden = false;
+        skipBtn.onclick = () => {
+          video.currentTime = intro.end;
+          skipBtn.hidden = true;
+        };
+      }
+
+      try {
+        await loadHls();
+      } catch (e) {}
+      const Hls = window.Hls;
+      if (Hls && Hls.isSupported()) {
+        const hls = new Hls({ maxBufferLength: 30 });
+        animeHls = hls;
+        hls.on(Hls.Events.ERROR, (evt, data) => {
+          if (data && data.fatal) showError('Stream error — try another episode.');
+        });
+        hls.loadSource(animePlayUrl(src, src.url));
+        hls.attachMedia(video);
+      } else {
+        video.src = animePlayUrl(src, src.url);
+      }
+      video.addEventListener('loadeddata', () => { loadingEl.style.display = 'none'; }, { once: true });
+      video.play().catch(() => {});
+    }
+
+    audioBtn.addEventListener('click', () => load(!dub));
+    if (nextBtn) nextBtn.addEventListener('click', () => (location.hash = `#/anime-watch/${id}/${ep + 1}`));
+    if (epSelect) epSelect.addEventListener('change', () => (location.hash = `#/anime-watch/${id}/${epSelect.value}`));
+
+    load(dub);
+  };
+
   // ---- detail ----
   views.detail = async (params) => {
     const type = params.type;
@@ -825,7 +1172,7 @@
           <span class="sub">${epLabel}</span>
         </div>
         <div class="player-shell">
-          <video controls autoplay playsinline preload="auto"></video>
+          <video controls autoplay playsinline preload="auto" crossorigin="anonymous"></video>
           <div class="player-loading">
             <div class="spinner"></div>
             <div class="pl-text">Finding streams…</div>
@@ -858,7 +1205,6 @@
             <div class="vol-pop more-pop" id="morePop" hidden>
               <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
               <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
-              <button class="subs-select ctl-btn" id="fojikBtn" hidden title="4K file download via your local Fojik (needs fojik-dl running)">↓ 4K (local)</button>
             </div>
           </span>
           <span class="vol-wrap">
@@ -936,75 +1282,6 @@
       a.click();
       a.remove();
       toastMsg('Download started — check your Downloads folder.');
-    });
-    // ---- local-only Fojik 4K downloads ($0, no cloud) ----
-    // fojik-dl runs on YOUR machine (http://localhost:5173). The browser talks
-    // to it directly — Vercel/Cloudflare never see the bytes, so this costs
-    // nothing and never hits serverless timeouts. Movies only (fojik = movies).
-    const fojikBtn = view.querySelector('#fojikBtn');
-    const FOJIK_DIRECT = 'http://127.0.0.1:5173';
-    let fojikBase = ''; // resolved working base: '' = unavailable
-    async function probeFojik() {
-      if (type !== 'movie') return; // fojik index is movies-only
-      // 1) same-origin bridge (works on localhost:3000 local dev, no CORS)
-      try {
-        const r = await fetch('/api/fojik/status');
-        const j = await r.json();
-        if (j && j.reachable) {
-          fojikBase = ''; // use same-origin /api/fojik/resolve/:id
-          fojikBtn.hidden = false;
-          fojikBtn.title = `4K file via local Fojik (${j.index || ''} indexed) — free, no cloud`;
-          return;
-        }
-      } catch {}
-      // 2) direct localhost (works even on the Vercel site, if fojik-dl runs locally)
-      try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 2500);
-        const r = await fetch(`${FOJIK_DIRECT}/api/health`, { signal: ctrl.signal });
-        clearTimeout(t);
-        const j = await r.json();
-        if (j && j.ok) {
-          fojikBase = FOJIK_DIRECT;
-          fojikBtn.hidden = false;
-          fojikBtn.title = '4K file via local Fojik (direct localhost) — free, no cloud';
-        }
-      } catch {}
-    }
-    probeFojik();
-    if (fojikBtn) fojikBtn.addEventListener('click', async () => {
-      const tmdbId = id;
-      fojikBtn.disabled = true;
-      const orig = fojikBtn.textContent;
-      fojikBtn.textContent = '…resolving 4K';
-      try {
-        const resolveUrl = fojikBase
-          ? `${fojikBase}/api/resolve/${tmdbId}`
-          : `/api/fojik/resolve/${tmdbId}`;
-        const r = await fetch(resolveUrl);
-        const j = await r.json();
-        if (!j.ok) throw new Error(j.error || 'not on Fojik');
-        const quals = (j.qualities || []).map((q) => q.quality).join(', ') || '4K';
-        toastMsg(`Fojik has: ${quals} — opening best file… (first resolve ~30s)`);
-        // /download/:id 302s to the signed file URL. Open direct-localhost so
-        // bytes never transit Vercel/Cloudflare.
-        const dlUrl = fojikBase ? `${fojikBase}/download/${tmdbId}` : `/api/fojik/download/${tmdbId}`;
-        // same-origin bridge has no /download passthrough by design (would bill
-        // cloud egress), so always open the local daemon for the actual bytes:
-        window.open(fojikBase ? dlUrl : `${FOJIK_DIRECT}/download/${tmdbId}`, '_blank');
-      } catch (e) {
-        // fetch() itself threw => the local daemon isn't reachable. Anything
-        // else means the daemon ANSWERED with the real upstream reason, so
-        // show that instead of blaming the local setup.
-        if (/Failed to fetch|NetworkError|aborted|refused|unreachable/i.test(e.message || '')) {
-          toastMsg('Local Fojik daemon not running. Start it: cd ~/fojik-dl && node server.js');
-        } else {
-          toastMsg(`Fojik resolve failed: ${e.message}`);
-        }
-      } finally {
-        fojikBtn.disabled = false;
-        fojikBtn.textContent = orig;
-      }
     });
     // volume boost (>100% via Web Audio gain). Button shows the live %, popup
     // has a 10–2000% slider; the player routes through gain+limiter.
@@ -1285,6 +1562,7 @@
 
   async function route() {
     const { parts, params } = parseHash();
+    destroyAnimeHls();
     // The SSR home markup only survives until the first navigation — any
     // other view replaces it, so the flag must not outlive that render
     // (otherwise a later home visit would skip its template and query DOM
@@ -1317,6 +1595,12 @@
         return views.browse({ kind: 'imdb75' });
       case 'genre':
         if (parts[1]) return views.browse({ kind: 'genre', genre: parts[1] });
+        break;
+      case 'anime':
+        if (parts[1]) return views.animeDetail({ id: parts[1] });
+        return views.anime({ q: params.q });
+      case 'anime-watch':
+        if (parts[1]) return views.animeWatch({ id: parts[1], ep: parts[2] || 1, dub: params.dub === '1' });
         break;
       case 'search':
         if (params.q) return views.search({ q: params.q });

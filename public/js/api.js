@@ -141,6 +141,16 @@ const API = (() => {
     genre: (genre, page = 1) => get(`/genre/${encodeURIComponent(genre)}?page=${page}`),
     topImdb: (type = 'all', page = 1) => get(`/top-imdb?type=${type}&page=${page}`),
     imdb75: (page = 1) => get(`/top-imdb?type=movie&page=${page}&minVote=7.5`),
+    // Anime section — separate catalog (AniList ids + MAL-keyed streams),
+    // never mixed with the TMDB movie/TV routes above.
+    anime: {
+      trending: (page = 1) => get(`/anime/trending?page=${page}`),
+      popular: (page = 1) => get(`/anime/popular?page=${page}`),
+      top: (page = 1) => get(`/anime/top?page=${page}`),
+      search: (q, page = 1) => get(`/anime/search?q=${encodeURIComponent(q)}&page=${page}`),
+      info: (id) => get(`/anime/info/${id}`),
+      sources: (malId, ep = 1, dub = false) => get(`/anime/sources/${malId}?ep=${ep}${dub ? '&dub=1' : ''}`),
+    },
   };
 })();
 

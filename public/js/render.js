@@ -70,6 +70,30 @@
     return `<div class="grid">${items.map(card).join('')}</div>`;
   }
 
+  // Anime cards share the poster-row styling but point at the separate
+  // anime routes (#/anime/<anilistId>) and speak anime metadata (episodes /
+  // format) instead of movie/TV labels.
+  function animeCard(item) {
+    const year = item.year || '';
+    const sub = item.episodes ? `${item.episodes} eps` : item.format ? String(item.format).replace(/_/g, ' ') : '';
+    const meta = [sub, year].filter(Boolean).map(esc).join(' · ');
+    return `
+      <div class="card" data-href="#/anime/${item.id}">
+        <div class="poster-wrap">
+          <span class="card-badge tv">Anime</span>
+          ${posterImg(item.image, item.title)}
+          ${item.rating ? `<span class="card-rating">★ ${Number(item.rating).toFixed(1)}</span>` : ''}
+          <div class="card-hover">
+            <div class="ch-title">${esc(item.title)}</div>
+            <div class="ch-meta">${meta || 'Anime'}</div>
+            <span class="ch-play">Watch now</span>
+          </div>
+        </div>
+        <div class="card-title">${esc(item.title)}</div>
+        <div class="card-year">${meta}</div>
+      </div>`;
+  }
+
   function skeletonRow(count) {
     let cards = '';
     for (let i = 0; i < (count || 8); i++) cards += `<div class="card"><div class="skel poster-wrap"></div><div class="skel" style="height:14px;margin-top:8px"></div></div>`;
@@ -119,5 +143,5 @@
       ${row(rows && rows.topRated, 'Top Rated', '#/top-rated')}`;
   }
 
-  return { TYPE_LABEL, esc, escapeHtml: esc, card, grid, skeletonRow, rowWithArrows, homeView };
+  return { TYPE_LABEL, esc, escapeHtml: esc, card, animeCard, grid, skeletonRow, rowWithArrows, homeView };
 });

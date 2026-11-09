@@ -1,0 +1,57 @@
+{
+  "$schema": "https://cinephile-areana.local/schemas/upstreams.json",
+  "version": 1,
+  "comment": "Single source of truth for embed-family routing. When an upstream renames a host, slug, or referer, edit THIS file (or set UPSTREAMS_JSON env) — no logic changes, no redeploy of decoders. scripts/sync-upstreams.mjs copies it into functions/lib/upstreams.json for the Pages edge build. Env override wins at runtime so you can hot-patch prod without a deploy.",
+  "families": {
+    "peachify": {
+      "api": "https://none.eat-peach.sbs",
+      "referer": "https://peachify.top/",
+      "origin": "https://peachify.top",
+      "providers": []
+    },
+    "meowtv": {
+      "api": "https://api.meowtv.ru",
+      "referer": "https://meowtv.ru/",
+      "origin": "https://meowtv.ru",
+      "providers": [
+        { "name": "english", "slug": "english" },
+        { "name": "acme", "slug": "acme" },
+        { "name": "dcloud", "slug": "dcloud" },
+        { "name": "tik", "slug": "tik" },
+        { "name": "hindi", "slug": "hindi" }
+      ]
+    },
+    "byse": {
+      "api": "https://0123movie.space",
+      "referer": "https://0123movie.space/",
+      "origin": "https://0123movie.space",
+      "providers": [
+        { "name": "byse", "slug": "byse" }
+      ]
+    },
+    "vidnest": {
+      "api": "https://new.vidnest.fun",
+      "referer": "https://vidnest.fun/",
+      "origin": "https://vidnest.fun",
+      "providers": [
+        { "name": "catflix", "slug": "yflix" },
+        { "name": "filxer", "slug": "rogflix" },
+        { "name": "gama", "slug": "vidzee" },
+        { "name": "lamda", "slug": "ophim" },
+        { "name": "beta", "slug": "flixhq" },
+        { "name": "alfa", "slug": "onehd" },
+        { "name": "prime", "slug": "rpmvid" },
+        { "name": "zeta", "slug": "nextgencloudfabric" },
+        { "name": "ophim", "slug": "klikxxi" },
+        { "name": "sigma", "slug": "hollymoviehd" },
+        { "name": "hexa", "slug": "vidlink" },
+        { "name": "delta", "slug": "allmovies" }
+      ]
+    }
+  },
+  "canary": {
+    "comment": "Titles the canary + /health/upstreams probe. Keep small, stable, popular.",
+    "movie": { "type": "movie", "id": "550", "label": "Fight Club" },
+    "tv": { "type": "tv", "id": "1396", "season": "1", "episode": "1", "label": "Breaking Bad S1E1" }
+  }
+}

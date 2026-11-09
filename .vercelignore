@@ -3,3 +3,11 @@ node_modules
 data/
 scripts/
 tests/
+
+.env
+.env.local
+.env.*.local
+.vercel
+.wrangler
+.claude
+.kilo

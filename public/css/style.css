@@ -467,6 +467,18 @@ button { font-family: inherit; }
 .page-head { padding: 36px 28px 24px; }
 .page-head h1 { font-size: 1.8rem; font-weight: 800; letter-spacing: -0.02em; }
 .page-head p { color: var(--muted); margin-top: 6px; font-size: 0.95rem; }
+.anime-search { margin-top: 18px; max-width: 460px; }
+.anime-search input {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.95rem;
+  outline: none;
+}
+.anime-search input:focus { border-color: var(--accent); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
 .chip {
   padding: 8px 16px;

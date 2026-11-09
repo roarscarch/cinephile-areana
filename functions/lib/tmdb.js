@@ -201,7 +201,9 @@ export class CinephileHQ {
   }
 
   async fetchEpisodeServers() {
-    return SERVERS.map((server) => ({ name: server.name }));
+    const { loadUpstreams } = await import('./upstreams.js');
+    const t = loadUpstreams(this.env);
+    return [...t.families.peachify.providers, ...t.families.vidnest.providers].map((s) => ({ name: s.name }));
   }
 
   async fetchEpisodeSources(episodeId, mediaId, server = null, skip = []) {

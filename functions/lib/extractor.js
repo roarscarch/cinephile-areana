@@ -4,31 +4,48 @@
 //   peachify  -> AES-256-GCM (WebCrypto) -> { sources, subtitles }
 //   vidnest   -> custom-base64 alphabet    -> 3 shapes normalized to { sources }
 // Only the plumbing changed: axios -> fetch, crypto -> subtle, Buffer -> Uint8Array.
+//
+// ROUTING (hosts/slugs/providers) comes from ./upstreams.json — bundled from
+// config/upstreams.json by scripts/sync-upstreams.mjs, overridable at runtime
+// via the UPSTREAMS_JSON Pages var. See ./upstreams.js. Never hardcode a new
+// slug here; edit config/upstreams.json and re-run the sync.
+import { loadUpstreams } from './upstreams.js';
 
-export const PROVIDERS = [
-  { name: 'horizon', path: 'hr' },
-  { name: 'wolf', path: 'air' },
-  { name: 'spider', path: 'holly' },
-  { name: 'multi', path: 'multi' },
-  { name: 'iron', path: 'moviebox' },
-];
+function fams(env) {
+  return loadUpstreams(env).families;
+}
+function peachProviders(env) {
+  return fams(env).peachify.providers;
+}
+function vidnestProviders(env) {
+  return fams(env).vidnest.providers;
+}
+function peachApi(env) {
+  return fams(env).peachify.api;
+}
+function peachReferer(env) {
+  return fams(env).peachify.referer || 'https://peachify.top/';
+}
+function peachOrigin(env) {
+  return fams(env).peachify.origin || 'https://peachify.top';
+}
+function vidApi(env) {
+  return fams(env).vidnest.api;
+}
+function vidReferer(env) {
+  return fams(env).vidnest.referer || 'https://vidnest.fun/';
+}
+function vidOrigin(env) {
+  return fams(env).vidnest.origin || 'https://vidnest.fun';
+}
 
-export const VIDNEST_PROVIDERS = [
-  // Direct-first: exact-arrival ties in the auto race resolve to the earliest
-  // registered provider, so historically CORS-open (browser-direct, zero proxy
-  // cost) providers go first. Relay/gated hosts (proxy-burning) go last.
-  { name: 'buzz' }, // 97bf1.com — CORS-open, direct
-  { name: 'vidxyz' }, // sparkvid relay — CORS-open, direct
-  { name: 'ngc', slug: 'nextgencloudfabric' }, // remoteconsultinggroup — ACAO *, direct
-  { name: 'videasy' }, // tiktoks.animanga.fun relay — movie + tv
-  { name: 'hollymoviehd' }, // direct mp4/hls streams, per-stream referers
-  { name: 'rogflix' }, // akcloud.animanga.fun relay
-];
+// Legacy named exports — resolved against the BUNDLED config (no env at
+// import time on the edge). Live code below takes env and reads fresh.
+import bundledTable from './upstreams.json' with { type: 'json' };
+export const PROVIDERS = bundledTable.families.peachify.providers;
+export const VIDNEST_PROVIDERS = bundledTable.families.vidnest.providers;
 
-const PEACHIFY_API = 'https://none.eat-peach.sbs';
 const PEACHIFY_REFERER = 'https://peachify.top/';
-const VIDNEST_API = 'https://new.vidnest.fun';
-const VIDNEST_REFERER = 'https://vidnest.fun/';
 const STREAM_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
@@ -146,11 +163,11 @@ export async function decryptPayload(payload, keyHex) {
 }
 
 async function fetchProvider(env, provider, type, id, season, episode) {
-  let url = `${PEACHIFY_API}/${provider.path}/${type}/${id}`;
+  let url = `${peachApi(env)}/${provider.path}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
   try {
     const json = await fetchJSON(url, {
-      headers: { Referer: PEACHIFY_REFERER, Origin: 'https://peachify.top', 'User-Agent': STREAM_UA },
+      headers: { Referer: peachReferer(env), Origin: peachOrigin(env), 'User-Agent': STREAM_UA },
     });
     if (json && json.isEncrypted) return decryptPayload(json.data, env.PEACHIFY_KEY_HEX);
     return json;
@@ -163,10 +180,10 @@ export async function fetchSubtitles(env, type, id, season, episode) {
   const key = titleKey(type, id, season, episode);
   if (subsCache.has(key)) return subsCache.get(key);
   try {
-    let url = `${PEACHIFY_API}/subs/${type}/${id}`;
+    let url = `${peachApi(env)}/subs/${type}/${id}`;
     if (type === 'tv') url += `/${season}/${episode}`;
     const raw = await fetchJSON(url, {
-      headers: { Referer: PEACHIFY_REFERER, Origin: 'https://peachify.top', 'User-Agent': STREAM_UA },
+      headers: { Referer: peachReferer(env), Origin: peachOrigin(env), 'User-Agent': STREAM_UA },
       timeout: 3000,
     });
     const subs = (Array.isArray(raw) ? raw : [])
@@ -197,16 +214,58 @@ export function vidnestDecode(data, alphabet) {
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
+// vidnest v2: API now answers { d, n, v } — AES-256-GCM payload keyed by
+// SHA-256(`${n}|VIDNEST_SECRET`), iv = first 12 bytes of decoded d, tag =
+// last 16 bytes of the remainder (matches their bundle's secureDecrypt).
+// Requires a `_n` nonce on the request or the API answers 403.
+// The old custom-alphabet { data } decode was retired upstream.
+const DEFAULT_VIDNEST_SECRET = 'K3p8vQ2mX9rL5wZ0fN7bG1sH4tJ6dC9_y8S3wM1nQ5pL2';
+
+function vidnestNonce() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function vidnestDecryptV2(data, nonce, secretOrKey) {
+  const key = crypto.subtle.importKey(
+    'raw',
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${nonce}|${secretOrKey}`))),
+    'AES-GCM',
+    false,
+    ['decrypt']
+  );
+  const raw = b64urlToBytes(data);
+  const iv = raw.slice(0, 12);
+  const ct = raw.slice(12);
+  const body = ct.slice(0, ct.length - 16);
+  const tag = ct.slice(ct.length - 16);
+  const combined = new Uint8Array(body.length + tag.length);
+  combined.set(body, 0);
+  combined.set(tag, body.length);
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, combined);
+  const text = new TextDecoder().decode(plain);
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
 async function fetchVidnestProvider(env, provider, type, id, season, episode) {
   const slug = provider.slug || provider.name;
-  let url = `${VIDNEST_API}/${slug}/${type}/${id}`;
+  let url = `${vidApi(env)}/${slug}/${type}/${id}`;
   if (type === 'tv') url += `/${season}/${episode}`;
+  url += `?_n=${encodeURIComponent(vidnestNonce())}`;
   try {
     const json = await fetchJSON(url, {
-      headers: { Referer: VIDNEST_REFERER, Origin: 'https://vidnest.fun', 'User-Agent': STREAM_UA },
+      headers: { Referer: vidReferer(env), Origin: vidOrigin(env), 'User-Agent': STREAM_UA },
     });
-    if (!json || !json.data) throw new Error(`vidnest ${provider.name}: unexpected response`);
-    return JSON.parse(vidnestDecode(json.data, env.VIDNEST_ALPHABET));
+    if (!json || !json.d || !json.n) throw new Error(`vidnest ${provider.name}: unexpected response`);
+    const secret = env.VIDNEST_SECRET || DEFAULT_VIDNEST_SECRET;
+    return await vidnestDecryptV2(json.d, json.n, secret);
   } catch (err) {
     const status = err.status || '';
     if (status === 502 || status === 404) throw new Error(`vidnest ${provider.name}: no source (${status})`);
@@ -240,17 +299,18 @@ export function vidnestToResult(provider, data) {
 
 async function resolveVidnest(env, { type, id, season, episode, server }) {
   if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
+  const ALL = vidnestProviders(env);
   if (server) {
-    const provider = VIDNEST_PROVIDERS.find((candidate) => candidate.name === String(server).toLowerCase());
+    const provider = ALL.find((candidate) => candidate.name === String(server).toLowerCase());
     if (!provider) throw new Error(`Unknown vidnest provider '${server}'`);
-    return vidnestToResult(provider, await fetchVidnestProvider(provider, type, id, season, episode));
+    return vidnestToResult(provider, await fetchVidnestProvider(env, provider, type, id, season, episode));
   }
   const key = titleKey(type, id, season, episode);
   const cachedName = vidnestCache.get(key);
-  const cachedProvider = cachedName && VIDNEST_PROVIDERS.find((candidate) => candidate.name === cachedName);
+  const cachedProvider = cachedName && ALL.find((candidate) => candidate.name === cachedName);
   const baseOrder = cachedProvider
-    ? [cachedProvider, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedProvider.name)]
-    : VIDNEST_PROVIDERS;
+    ? [cachedProvider, ...ALL.filter((provider) => provider.name !== cachedProvider.name)]
+    : ALL;
   const order = baseOrder.filter((provider) => !isDead('vidnest', provider, key));
   let lastError = null;
   const settled = await Promise.allSettled(
@@ -536,25 +596,27 @@ export async function resolveStream(env, { type, id, season, episode, server, sk
   if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
   if (!env.PEACHIFY_KEY_HEX) throw new Error('PEACHIFY_KEY_HEX env required');
   if (!env.VIDNEST_ALPHABET) throw new Error('VIDNEST_ALPHABET env required');
+  const ALL_PEACH = peachProviders(env);
+  const ALL_VID = vidnestProviders(env);
   if (server) {
     const name = String(server).toLowerCase();
-    const vidnestProvider = VIDNEST_PROVIDERS.find((candidate) => candidate.name === name);
+    const vidnestProvider = ALL_VID.find((candidate) => candidate.name === name);
     if (vidnestProvider) return resolveVidnest(env, { type, id, season, episode, server: name });
-    const provider = PROVIDERS.find((candidate) => candidate.name === name || candidate.path === name);
+    const provider = ALL_PEACH.find((candidate) => candidate.name === name || candidate.path === name);
     if (!provider) throw new Error(`Unknown provider '${server}'`);
     const data = await fetchProvider(env, provider, type, id, season, episode);
     return toResult(provider, data);
   }
   const key = titleKey(type, id, season, episode);
   const cachedPeachifyName = providerCache.get(key);
-  const cachedPeachify = cachedPeachifyName && PROVIDERS.find((candidate) => candidate.name === cachedPeachifyName);
+  const cachedPeachify = cachedPeachifyName && ALL_PEACH.find((candidate) => candidate.name === cachedPeachifyName);
   const skipSet = new Set((skip || []).map((name) => String(name).toLowerCase()));
-  const peachifyOrder = (cachedPeachify ? [cachedPeachify, ...PROVIDERS.filter((provider) => provider.name !== cachedPeachify.name)] : PROVIDERS).filter(
+  const peachifyOrder = (cachedPeachify ? [cachedPeachify, ...ALL_PEACH.filter((provider) => provider.name !== cachedPeachify.name)] : ALL_PEACH).filter(
     (provider) => !skipSet.has(provider.name) && !familyDown('peachify') && !isDead('peachify', provider, key)
   );
   const cachedVidnestName = vidnestCache.get(key);
-  const cachedVidnest = cachedVidnestName && VIDNEST_PROVIDERS.find((candidate) => candidate.name === cachedVidnestName);
-  const vidnestOrder = (cachedVidnest ? [cachedVidnest, ...VIDNEST_PROVIDERS.filter((provider) => provider.name !== cachedVidnest.name)] : VIDNEST_PROVIDERS).filter(
+  const cachedVidnest = cachedVidnestName && ALL_VID.find((candidate) => candidate.name === cachedVidnestName);
+  const vidnestOrder = (cachedVidnest ? [cachedVidnest, ...ALL_VID.filter((provider) => provider.name !== cachedVidnest.name)] : ALL_VID).filter(
     (provider) => !skipSet.has(provider.name) && !familyDown('vidnest') && !isDead('vidnest', provider, key)
   );
   const outcome = await autoRace(env, peachifyOrder, vidnestOrder, key, { type, id, season, episode, minDurationPromise });
