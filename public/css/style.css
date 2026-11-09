@@ -819,6 +819,12 @@ button { font-family: inherit; }
   font-size: 0.84rem;
   font-weight: 700;
 }
+.probe-status {
+  font-weight: 500;
+  font-size: 0.78rem;
+  color: var(--muted);
+  opacity: 0.9;
+}
 
 .subs-select {
   padding: 9px 18px;

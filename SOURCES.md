@@ -241,10 +241,11 @@ tracked **per title**, not globally:
   returns `[{ name, available, ms }]`. Results are cached in memory for 10
   minutes (server-side) — availability and tokens change, so this is a short
   TTL, not a permanent record.
-- The watch page keeps **Auto** as the default, then runs that probe in the
-  **background** (never blocking playback). When it lands, the server picker
-  **prunes servers with no source for this title** and ticks (`✓`) the ones that
-  have one. The client also memoises the result for the page session.
+- The watch page keeps **Auto** as the default and does **no probing on load**.
+  The probe is **lazy**: it runs only when the user opens the Server dropdown
+  (cached ~10 min server-side + page-session, so reopening is instant). When it
+  lands, the picker **prunes servers with no source for this title** and ticks
+  (`✓`) the ones that have one.
 - Result: when you switch sources, the dropdown only offers servers that
   actually have a stream for *this* movie/episode.
 

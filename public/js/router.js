@@ -1230,9 +1230,10 @@
         </div>
       </div>`;
 
-    // server picker: Auto stays default. A BACKGROUND per-title probe then
-    // prunes servers that have no source for THIS movie/episode and ticks the
-    // ones that do — so switching only offers sources that actually work here.
+    // server picker: Auto stays default. The per-title availability probe is
+    // LAZY — it runs only when the user opens the Server dropdown (never on
+    // watch load), so normal playback costs zero extra upstream calls. Cached
+    // ~10 min server-side + page-session, so reopening is instant.
     const bar = view.querySelector('#serverBar');
     try {
       const labels = Player.PROVIDER_LABELS;
@@ -1245,8 +1246,10 @@
       try {
         servers = await API.servers(mediaId, episodeId);
       } catch (e) {}
-      const avail = {}; // name -> true|false (from the background probe)
-      const optionsHtml = (probed) => {
+      const avail = {}; // name -> true|false (populated once the probe runs)
+      let probed = false;
+      let probing = false;
+      const optionsHtml = () => {
         const sel = bar.querySelector('#serverSelect');
         const cur = sel ? sel.value : '';
         let list = [...servers].sort((a, b) => rank(a.name) - rank(b.name));
@@ -1264,25 +1267,43 @@
       };
       bar.innerHTML =
         `<label class="server-pick">Server <select class="subs-select" id="serverSelect">` +
-        `${optionsHtml(false)}</select></label>`;
+        `${optionsHtml()}</select><span class="probe-status" id="probeStatus"></span></label>`;
       const serverSelect = bar.querySelector('#serverSelect');
+      const probeStatus = bar.querySelector('#probeStatus');
       serverSelect.addEventListener('change', () => {
         serverSelect.disabled = true;
         player.switchServer(serverSelect.value).finally(() => {
           serverSelect.disabled = false;
         });
       });
-      // Fire-and-forget: never blocks playback. When it lands, keep only the
-      // servers that returned a source for this title (plus the current pick).
-      probeTitleServers(mediaId, episodeId)
-        .then((probe) => {
-          if (!Array.isArray(probe)) return;
-          for (const r of probe) avail[r.name] = r.available;
-          const cur = serverSelect.value;
-          serverSelect.innerHTML = optionsHtml(true);
-          if ([...serverSelect.options].some((o) => o.value === cur)) serverSelect.value = cur;
-        })
-        .catch(() => {});
+      const runProbe = () => {
+        if (probing || probed) return;
+        probing = true;
+        if (probeStatus) {
+          probeStatus.textContent = 'checking sources…';
+          probeStatus.hidden = false;
+        }
+        probeTitleServers(mediaId, episodeId)
+          .then((probe) => {
+            if (!Array.isArray(probe)) return;
+            for (const r of probe) avail[r.name] = r.available;
+            probed = true;
+            const cur = serverSelect.value;
+            serverSelect.innerHTML = optionsHtml();
+            if ([...serverSelect.options].some((o) => o.value === cur)) serverSelect.value = cur;
+            if (probeStatus) probeStatus.hidden = true;
+          })
+          .catch(() => {
+            if (probeStatus) probeStatus.hidden = true;
+          })
+          .finally(() => {
+            probing = false;
+          });
+      };
+      // Lazy trigger: any interaction that opens/prepares the dropdown.
+      serverSelect.addEventListener('pointerdown', runProbe, { once: false });
+      serverSelect.addEventListener('focus', runProbe);
+      serverSelect.addEventListener('keydown', runProbe);
     } catch (e) {}
 
     // player — created immediately, no awaiting. The hls.js download starts
