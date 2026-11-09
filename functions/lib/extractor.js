@@ -450,6 +450,7 @@ async function fetchFull(url, referer, origin) {
 }
 
 async function verifyWinnerSegments(src, minDurationSec = 0) {
+  if (src && src.skipVerify) return true;
   const isPlaylist =
     src.isM3U8 ||
     /\.m3u8($|\?)|streamsvr|\/hls\d*\//i.test(src.url) ||
@@ -530,6 +531,7 @@ function firstChildUrl(head, playlistUrl) {
 
 async function probeStreamPlayable(src) {
   if (!src || !src.url) return false;
+  if (src.skipProbe) return true;
   try {
     const headers = probeHeaders(src);
     const isM3U8 =
@@ -975,6 +977,11 @@ function cinejoyToResult(env, provider, result) {
         origin: cinejoyOrigin(env),
         lang: null,
         dub: null,
+        // The cinejoy HLS CDN is not reliably reachable from Cloudflare egress
+        // (probe/verify fail even though the stream plays for clients). The API
+        // verdict is authoritative here; skip the CDN startability checks.
+        skipProbe: true,
+        skipVerify: true,
       });
     }
     for (const c of (s && s.captions) || []) {

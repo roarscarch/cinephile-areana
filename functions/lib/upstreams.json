@@ -1,7 +1,7 @@
 {
   "$schema": "https://cinephile-areana.local/schemas/upstreams.json",
   "version": 1,
-  "comment": "Single source of truth for embed-family routing. When an upstream renames a host, slug, or referer, edit THIS file (or set UPSTREAMS_JSON env) — no logic changes, no redeploy of decoders. scripts/sync-upstreams.mjs copies it into functions/lib/upstreams.json for the Pages edge build. Env override wins at runtime so you can hot-patch prod without a deploy.",
+  "comment": "Single source of truth for embed-family routing. When an upstream renames a host, slug, or referer, edit THIS file (or set UPSTREAMS_JSON env) \u2014 no logic changes, no redeploy of decoders. scripts/sync-upstreams.mjs copies it into functions/lib/upstreams.json for the Pages edge build. Env override wins at runtime so you can hot-patch prod without a deploy.",
   "families": {
     "peachify": {
       "api": "https://none.eat-peach.sbs",
@@ -14,11 +14,26 @@
       "referer": "https://meowtv.ru/",
       "origin": "https://meowtv.ru",
       "providers": [
-        { "name": "english", "slug": "english" },
-        { "name": "acme", "slug": "acme" },
-        { "name": "dcloud", "slug": "dcloud" },
-        { "name": "tik", "slug": "tik" },
-        { "name": "hindi", "slug": "hindi" }
+        {
+          "name": "english",
+          "slug": "english"
+        },
+        {
+          "name": "acme",
+          "slug": "acme"
+        },
+        {
+          "name": "dcloud",
+          "slug": "dcloud"
+        },
+        {
+          "name": "tik",
+          "slug": "tik"
+        },
+        {
+          "name": "hindi",
+          "slug": "hindi"
+        }
       ]
     },
     "byse": {
@@ -26,44 +41,88 @@
       "referer": "https://0123movie.space/",
       "origin": "https://0123movie.space",
       "providers": [
-        { "name": "byse", "slug": "byse" }
+        {
+          "name": "byse",
+          "slug": "byse"
+        }
       ]
     },
     "cinejoy": {
       "api": "https://api.wing.st",
       "referer": "https://cinejoy.pk/",
       "origin": "https://cinejoy.pk",
-      "providers": [
-        { "name": "secret", "slug": "secret" },
-        { "name": "nebula", "slug": "Nebula" },
-        { "name": "lisbon", "slug": "Lisbon" },
-        { "name": "solara", "slug": "Solara" },
-        { "name": "athens", "slug": "Athens" }
-      ]
+      "providers": [],
+      "_note": "Resolves via API, but the CDN (/dontscrape/ loop) blocks Cloudflare Worker egress so /play 502s. Enable by restoring providers when that changes."
     },
     "vidnest": {
       "api": "https://new.vidnest.fun",
       "referer": "https://vidnest.fun/",
       "origin": "https://vidnest.fun",
       "providers": [
-        { "name": "catflix", "slug": "yflix" },
-        { "name": "filxer", "slug": "rogflix" },
-        { "name": "gama", "slug": "vidzee" },
-        { "name": "lamda", "slug": "ophim" },
-        { "name": "beta", "slug": "flixhq" },
-        { "name": "alfa", "slug": "onehd" },
-        { "name": "prime", "slug": "rpmvid" },
-        { "name": "zeta", "slug": "nextgencloudfabric" },
-        { "name": "ophim", "slug": "klikxxi" },
-        { "name": "sigma", "slug": "hollymoviehd" },
-        { "name": "hexa", "slug": "vidlink" },
-        { "name": "delta", "slug": "allmovies" }
+        {
+          "name": "catflix",
+          "slug": "yflix"
+        },
+        {
+          "name": "filxer",
+          "slug": "rogflix"
+        },
+        {
+          "name": "gama",
+          "slug": "vidzee"
+        },
+        {
+          "name": "lamda",
+          "slug": "ophim"
+        },
+        {
+          "name": "beta",
+          "slug": "flixhq"
+        },
+        {
+          "name": "alfa",
+          "slug": "onehd"
+        },
+        {
+          "name": "prime",
+          "slug": "rpmvid"
+        },
+        {
+          "name": "zeta",
+          "slug": "nextgencloudfabric"
+        },
+        {
+          "name": "ophim",
+          "slug": "klikxxi"
+        },
+        {
+          "name": "sigma",
+          "slug": "hollymoviehd"
+        },
+        {
+          "name": "hexa",
+          "slug": "vidlink"
+        },
+        {
+          "name": "delta",
+          "slug": "allmovies"
+        }
       ]
     }
   },
   "canary": {
     "comment": "Titles the canary + /health/upstreams probe. Keep small, stable, popular.",
-    "movie": { "type": "movie", "id": "550", "label": "Fight Club" },
-    "tv": { "type": "tv", "id": "1396", "season": "1", "episode": "1", "label": "Breaking Bad S1E1" }
+    "movie": {
+      "type": "movie",
+      "id": "550",
+      "label": "Fight Club"
+    },
+    "tv": {
+      "type": "tv",
+      "id": "1396",
+      "season": "1",
+      "episode": "1",
+      "label": "Breaking Bad S1E1"
+    }
   }
 }

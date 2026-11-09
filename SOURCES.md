@@ -14,7 +14,8 @@ and go dark constantly. Everything here can change overnight.
   the player's own JavaScript (or public reverse-engineering repos) and then
   calling the same endpoints it does.
 - Routing lives in [`config/upstreams.json`](config/upstreams.json) — a
-  `families` table (`peachify`, `vidnest`, `meowtv`, `byse`, `cinejoy`) consumed by the
+  `families` table (`peachify`, `vidnest`, `meowtv`, `byse`; `cinejoy` is present
+  but disabled — see below) consumed by the
   resolver (`src/services/extractor.js`) and mirrored for the edge
   (`functions/lib/extractor.js`).
 - Anime is a **separate catalog**: [AniList](https://anilist.co) metadata +
@@ -150,7 +151,7 @@ Useful greppable strings that have paid off:
 - Every title answered `{"code":"500","error":"no sources found"}` — their
   backend is dry. Not integrated.
 
-### Cinejoy — `api.wing.st` ✅ added (multi-server)
+### Cinejoy — `api.wing.st` ⚠️ resolves, disabled (CDN blocks our proxy)
 
 - Flow: `GET /servers` (registry of embed servers) → `GET
   enc-dec.app/api/enc-cinejoy?url={cinejoy-api-url}` → `POST /g` (octet-stream)
@@ -162,7 +163,13 @@ Useful greppable strings that have paid off:
   `Nebula` (and sometimes `secret`) carry titles; the rest are content-gated —
   exactly what the race + dead-marks are for.
 - Streams are HLS on `lightspeed.st` / `*.bright67.online` with VTT captions,
-  Referer-gated to `https://cinejoy.pk/` → played through `/play`.
+  Referer-gated to `https://cinejoy.pk/`.
+- **Why it is disabled:** the HLS CDN answers our normal requests fine, but
+  returns a `/dontscrape/…` **redirect loop** to Cloudflare Worker egress — so
+  the shared `/play` proxy (used by both Vercel and Pages deployments) gets a
+  502 and playback fails. A source that resolves but cannot play is worse than
+  none, so `providers` is left empty in config. Re-enable by restoring the
+  server list once the CDN stops blocking datacenter/proxy IPs.
 
 ### Tried, not added (and why)
 
@@ -200,6 +207,7 @@ Useful greppable strings that have paid off:
 ```
 config/upstreams.json
    families: { peachify, vidnest, meowtv, byse, cinejoy }  ← hosts, referers, slugs
+   (cinejoy present but providers:[] while its CDN blocks the proxy)
         │
         ├─ src/services/upstreams.js        (Node: reads config + UPSTREAMS_JSON env)
         └─ functions/lib/upstreams.js       (Edge: bundled JSON + UPSTREAMS_JSON env)
@@ -272,5 +280,5 @@ config/upstreams.json
 ---
 
 *Last updated: this build — families `peachify` (dead, kept for shape),
-`vidnest` (core), `meowtv` (added), `byse` (added), `cinejoy` (added);
-anime via AniList + Megaplay.*
+`vidnest` (core), `meowtv` (added), `byse` (added), `cinejoy` (disabled: CDN
+blocks proxy); anime via AniList + Megaplay.*
