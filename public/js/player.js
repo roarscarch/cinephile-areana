@@ -529,11 +529,14 @@ const Player = (() => {
     }
 
     // ---- volume boost beyond 100% (Web Audio) ----
-    // video.volume tops out at 1.0 (100%). To go louder we route the element
-    // through an audio graph: mediaElement → GainNode → DynamicsCompressor
-    // (used as a near-limiter so boosted peaks never clip) → destination.
-    // Once the graph is live, video.volume is held at 1 and the GainNode owns
-    // loudness (1 = 100%, 2 = 200%, 4 = 400%).
+    // video.volume tops out at 1.0 (100%). Boosting above that needs a
+    // GainNode, but routing NORMAL playback through Web Audio (and an always-on
+    // compressor) was distorting clean audio — audible as crackle. So:
+    //   • at ≤100% we use the element's native volume (bit-clean, no graph)
+    //   • only when the user boosts above 100% do we build
+    //     source → gain → gentle compressor → soft-clip limiter → destination
+    // The Waveshaper saturates peaks smoothly (unity gain for quiet signals,
+    // saturating near ±1) so high boost clips softly instead of cracking.
     _ensureAudioGraph() {
       if (this._audioGain) {
         if (this._audioGraph && this._audioGraph.state === 'suspended') {
@@ -542,23 +545,38 @@ const Player = (() => {
         this._audioGain.gain.value = this._volume; // keep in sync
         return;
       }
+      // ≤100%: stay on native audio — never enter Web Audio.
+      if (!(this._volume > 1.001)) return;
       const Ctor = window.AudioContext || window.webkitAudioContext;
       if (!Ctor) return;
       try {
         const ctx = new Ctor();
         const source = ctx.createMediaElementSource(this.video);
         const gainNode = ctx.createGain();
-        const limiterNode = ctx.createDynamicsCompressor();
-        // Near-limiter: threshold near 0 dB, hard ratio, fast attack, slow
-        // release — clamps boosted peaks instead of letting them crackle.
-        limiterNode.threshold.value = -1;
-        limiterNode.knee.value = 0;
-        limiterNode.ratio.value = 16;
-        limiterNode.attack.value = 0.002;
-        limiterNode.release.value = 0.1;
-        gainNode.connect(limiterNode);
-        limiterNode.connect(ctx.destination);
+        // Gentle compression (tames dynamics, avoids pumping)…
+        const comp = ctx.createDynamicsCompressor();
+        comp.threshold.value = -6;
+        comp.knee.value = 6;
+        comp.ratio.value = 4;
+        comp.attack.value = 0.004;
+        comp.release.value = 0.25;
+        // …then a soft-clip (cubic) limiter: unity for small signals, smooth
+        // saturation approaching ±1, hard clamp beyond. This is what prevents
+        // the harsh digital-clipping crackle under boost.
+        const shaper = ctx.createWaveShaper();
+        const n = 4096;
+        const curve = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          const x = (i / (n - 1)) * 2 - 1; // -1..1
+          const y = x - (x * x * x) / 3; // slope 1 at 0, saturates at ±2/3
+          curve[i] = y / (2 / 3); // normalise to ±1 at the edges
+        }
+        shaper.curve = curve;
+        shaper.oversample = '4x'; // less aliasing → fewer artefacts
         source.connect(gainNode);
+        gainNode.connect(comp);
+        comp.connect(shaper);
+        shaper.connect(ctx.destination);
         gainNode.gain.value = this._volume;
         this._audioGraph = ctx;
         this._audioGain = gainNode;
@@ -573,11 +591,14 @@ const Player = (() => {
     setVolume(v) {
       this._volume = Math.max(0.1, Math.min(20, Number(v) || 0.1));
       localStorage.setItem('cinephile-volume', String(this._volume));
+      // Entering boost from ≤100%: build the graph now (needs a user gesture —
+      // this is called from the volume control, so we have one).
+      if (this._volume > 1.001 && !this._audioGain) this._ensureAudioGraph();
       if (this._audioGain) {
         this.video.volume = 1;
         this._audioGain.gain.value = this._volume;
       } else {
-        // graph not live yet (no gesture): native element caps at 100%
+        // graph not live (≤100% by design, or no Web Audio): native element
         this.video.volume = Math.max(0, Math.min(1, this._volume));
       }
       this.shell.dispatchEvent(new CustomEvent('volume-change', { detail: { volume: this._volume } }));
