@@ -53,6 +53,10 @@ If you're a developer (or just curious how it works under the hood — architect
 providers, deployment, encryption internals, etc.), everything lives in
 **[TECHNICAL.md](TECHNICAL.md)**.
 
+How the stream sources were **discovered** (and how to add new ones) is written
+up in **[SOURCES.md](SOURCES.md)** — sample repos, reverse-engineered player
+bundles, the byse/meowtv/Nexa/Hexa investigation, and a step-by-step guide.
+
 ---
 
 ## Deploy your own (free)

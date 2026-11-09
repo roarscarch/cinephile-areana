@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { TvType } = require('../utils/constants');
-const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, getProviders, getVidnestProviders, getByseProviders, signPlayUrl } = require('./extractor');
+const { resolveStream, fetchSubtitles, fetchVidnestSubtitles, getProviders, getVidnestProviders, getByseProviders, getCinejoyProviders, signPlayUrl } = require('./extractor');
 const { fetchEnglishSubtitles } = require('./subtitles'); // primary English subtitle source
 const { httpAgent, httpsAgent } = require('../utils/http');
 
@@ -15,7 +15,7 @@ const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 // on every call — never a boot-time snapshot — so a hot-patched upstream
 // rename shows up in /servers immediately, without a restart.
 function SERVERS() {
-  return [...getProviders(), ...getVidnestProviders(), ...getByseProviders()];
+  return [...getProviders(), ...getVidnestProviders(), ...getByseProviders(), ...getCinejoyProviders()];
 }
 
 // Subtitle lookups are ENRICHMENT, never a playback gate: race them against a

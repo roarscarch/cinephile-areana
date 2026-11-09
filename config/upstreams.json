@@ -29,6 +29,18 @@
         { "name": "byse", "slug": "byse" }
       ]
     },
+    "cinejoy": {
+      "api": "https://api.wing.st",
+      "referer": "https://cinejoy.pk/",
+      "origin": "https://cinejoy.pk",
+      "providers": [
+        { "name": "secret", "slug": "secret" },
+        { "name": "nebula", "slug": "Nebula" },
+        { "name": "lisbon", "slug": "Lisbon" },
+        { "name": "solara", "slug": "Solara" },
+        { "name": "athens", "slug": "Athens" }
+      ]
+    },
     "vidnest": {
       "api": "https://new.vidnest.fun",
       "referer": "https://vidnest.fun/",

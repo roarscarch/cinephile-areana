@@ -85,6 +85,18 @@ function byseApi() {
 function byseReferer() {
   return byse().referer || 'https://0123movie.space/';
 }
+function cinejoy() {
+  return cfg().families.cinejoy || {};
+}
+function cinejoyApi() {
+  return cinejoy().api || 'https://api.wing.st';
+}
+function cinejoyReferer() {
+  return cinejoy().referer || 'https://cinejoy.pk/';
+}
+function cinejoyOrigin() {
+  return cinejoy().origin || 'https://cinejoy.pk';
+}
 const PEACHIFY_REFERER = 'https://peachify.top/';
 
 // Provider order mirrors the site's own player auto-cycling. Read live from
@@ -100,6 +112,9 @@ function getMeowtvProviders() {
 }
 function getByseProviders() {
   return byse().providers;
+}
+function getCinejoyProviders() {
+  return cinejoy().providers || [];
 }
 // Back-compat consts: string values captured from the CURRENT config for
 // template literals + legacy importers. Refreshed by refreshUpstreamConsts().
@@ -121,6 +136,7 @@ const PROVIDERS = [];
 const VIDNEST_PROVIDERS = [];
 const MEOWTV_PROVIDERS = [];
 const BYSE_PROVIDERS = [];
+const CINEJOY_PROVIDERS = [];
 function syncExportedProviderLists() {
   try {
     PROVIDERS.length = 0;
@@ -131,6 +147,8 @@ function syncExportedProviderLists() {
     for (const p of getMeowtvProviders()) MEOWTV_PROVIDERS.push(p);
     BYSE_PROVIDERS.length = 0;
     for (const p of getByseProviders()) BYSE_PROVIDERS.push(p);
+    CINEJOY_PROVIDERS.length = 0;
+    for (const p of getCinejoyProviders()) CINEJOY_PROVIDERS.push(p);
   } catch {}
 }
 syncExportedProviderLists();
@@ -185,6 +203,7 @@ const providerCache = new Map();
 const vidnestCache = new Map();
 const meowtvCache = new Map();
 const byseCache = new Map();
+const cinejoyCache = new Map();
 const subsCache = new Map();
 const vdrkSubsCache = new Map();
 
@@ -886,6 +905,142 @@ async function resolveByse({ type, id, season, episode, imdbId, server }) {
   return byseToResult(provider, resolved);
 }
 
+// ---- cinejoy ----
+// api.wing.st: enc-cinejoy(url) -> POST /g (octet-stream) -> dec-cinejoy.
+// Returns { data: { stream: [{ type:'hls', playlist, captions:[{url,language}] }] } }.
+// Requires title/year/imdb (TMDB metadata) + a server name. Servers are
+// content-gated per title (some return no stream) — the race handles it.
+const CINEJOY_ENC = 'https://enc-dec.app/api/enc-cinejoy';
+const CINEJOY_DEC = 'https://enc-dec.app/api/dec-cinejoy';
+const tmdbMetaCache = new Map();
+
+async function fetchTitleMeta(type, id) {
+  const key = `${type}:${id}`;
+  if (tmdbMetaCache.has(key)) return tmdbMetaCache.get(key);
+  const promise = (async () => {
+    const apiKey = process.env.TMDB_API_KEY;
+    if (!apiKey) return null;
+    try {
+      const res = await httpClient.get(`https://api.themoviedb.org/3/${type}/${id}`, {
+        params: { api_key: apiKey, append_to_response: 'external_ids' },
+        timeout: 5000,
+      });
+      const d = res.data || {};
+      const date = type === 'movie' ? d.release_date : d.first_air_date;
+      return {
+        title: type === 'movie' ? d.title : d.name,
+        year: date ? String(date).slice(0, 4) : '',
+        imdb: (d.external_ids && d.external_ids.imdb_id) || null,
+      };
+    } catch {
+      return null;
+    }
+  })();
+  tmdbMetaCache.set(key, promise);
+  const meta = await promise;
+  if (!meta) tmdbMetaCache.delete(key);
+  return meta;
+}
+
+const b64urlFromBuffer = (buf) =>
+  Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function fetchCinejoyProvider(provider, type, id, season, episode, meta) {
+  if (!meta || !meta.title) throw new Error('cinejoy: metadata required');
+  const server = provider.slug || provider.name;
+  let url =
+    `${cinejoyApi()}/?title=${encodeURIComponent(meta.title)}` +
+    `&type=${type === 'movie' ? 'movie' : 'series'}` +
+    `&year=${encodeURIComponent(meta.year || '')}` +
+    `&imdb=${encodeURIComponent(meta.imdb || '')}` +
+    `&tmdb=${encodeURIComponent(id)}&server=${encodeURIComponent(server)}`;
+  if (type === 'tv') url += `&season=${encodeURIComponent(season || 1)}&episode=${encodeURIComponent(episode || 1)}`;
+  try {
+    const encRes = await httpClient.get(`${CINEJOY_ENC}?url=${encodeURIComponent(url)}`, { timeout: PROBE_TIMEOUT_MS });
+    const enc = encRes.data && encRes.data.result;
+    if (!enc || !enc.data) throw new Error('encode failed');
+    const body = Buffer.from(String(enc.data).replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+    const gRes = await httpClient.post(`${cinejoyApi()}/g`, body, {
+      headers: {
+        Origin: cinejoyOrigin(),
+        Referer: cinejoyReferer(),
+        'User-Agent': STREAM_UA,
+        'Content-Type': 'application/octet-stream',
+      },
+      responseType: 'arraybuffer',
+      timeout: PROBE_TIMEOUT_MS,
+    });
+    const decRes = await httpClient.post(
+      CINEJOY_DEC,
+      { text: b64urlFromBuffer(gRes.data), state: enc.state },
+      { headers: { 'Content-Type': 'application/json' }, timeout: PROBE_TIMEOUT_MS }
+    );
+    if (!decRes.data || decRes.data.status !== 200 || !decRes.data.result) throw new Error('decode failed');
+    return decRes.data.result;
+  } catch (err) {
+    const status = err.response ? err.response.status : '';
+    throw new Error(`cinejoy ${provider.name} ${status || err.message}`);
+  }
+}
+
+function cinejoyToResult(provider, result) {
+  const streams = (result && result.data && result.data.stream) || [];
+  const sources = [];
+  const subtitles = [];
+  for (const s of streams) {
+    if (s && s.playlist) {
+      sources.push({
+        url: s.playlist,
+        quality: s.id || 'auto',
+        isM3U8: true,
+        headers: null,
+        referer: cinejoyOrigin() + '/',
+        origin: cinejoyOrigin(),
+        lang: null,
+        dub: null,
+      });
+    }
+    for (const c of (s && s.captions) || []) {
+      if (c && c.url) subtitles.push({ url: c.url, label: c.language || c.id || 'Subtitles', lang: c.language || c.id || null });
+    }
+  }
+  return { provider: provider.name, sources, subtitles };
+}
+
+async function resolveCinejoy({ type, id, season, episode, server, meta }) {
+  if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
+  const ALL = getCinejoyProviders();
+  if (!ALL.length) throw new Error('cinejoy: no providers configured');
+  if (!meta) meta = await fetchTitleMeta(type, id);
+  if (server) {
+    const provider = ALL.find((c) => c.name === String(server).toLowerCase() || c.slug === server);
+    if (!provider) throw new Error(`Unknown cinejoy server '${server}'`);
+    return cinejoyToResult(provider, await fetchCinejoyProvider(provider, type, id, season, episode, meta));
+  }
+  const key = titleKey(type, id, season, episode);
+  const cachedName = cinejoyCache.get(key);
+  const cached = cachedName && ALL.find((c) => c.name === cachedName);
+  const order = (cached ? [cached, ...ALL.filter((p) => p.name !== cached.name)] : ALL).filter(
+    (p) => !isDead('cinejoy', p, key) && !familyDown('cinejoy')
+  );
+  let lastError = null;
+  const settled = await Promise.allSettled(
+    order.map((p) => fetchCinejoyProvider(p, type, id, season, episode, meta).then((r) => cinejoyToResult(p, r)))
+  );
+  for (let i = 0; i < order.length; i++) {
+    const o = settled[i];
+    if (o.status === 'rejected') {
+      lastError = o.reason;
+      markDead('cinejoy', order[i], key);
+      continue;
+    }
+    if (!o.value.sources.length) continue;
+    cinejoyCache.set(key, order[i].name);
+    return o.value;
+  }
+  throw new Error(`No cinejoy source found${lastError ? ` (${lastError.message})` : ''}`);
+}
+
 // vidnest's subtitles come from a separate API (sub.vdrk.site) serving VTT
 // files per language on cache.vdrk.site (CORS-open, playable directly).
 async function fetchVidnestSubtitles(type, id, season, episode) {
@@ -1131,7 +1286,7 @@ async function verifyWinnerSegments(src, minDurationSec = 0) {
 // family breaker run as side effects on every probe, so bookkeeping stays
 // correct even for probes still in flight after a winner was taken: a late
 // failure counts toward tripping its family breaker, a late success heals it.
-async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = [], byseOrder = []) {
+async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = [], byseOrder = [], cinejoyOrder = []) {
   const candidates = [];
   // peachify first: exact-arrival ties resolve to it (registered sooner),
   // preserving brand preference wherever speed doesn't differ.
@@ -1139,14 +1294,15 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = []
   for (const provider of vidnestOrder) candidates.push(['vidnest', provider]);
   for (const provider of meowtvOrder) candidates.push(['meowtv', provider]);
   for (const provider of byseOrder) candidates.push(['byse', provider]);
+  for (const provider of cinejoyOrder) candidates.push(['cinejoy', provider]);
 
   return await new Promise((resolve) => {
     let remaining = candidates.length;
     if (!remaining) return resolve({ won: false, lastErr: {} });
     let finished = false;
     const lastErrors = {};
-    const failCounts = { peachify: 0, vidnest: 0, meowtv: 0, byse: 0 };
-    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length, meowtv: meowtvOrder.length, byse: byseOrder.length };
+    const failCounts = { peachify: 0, vidnest: 0, meowtv: 0, byse: 0, cinejoy: 0 };
+    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length, meowtv: meowtvOrder.length, byse: byseOrder.length, cinejoy: cinejoyOrder.length };
     // One abort gate per candidate: crowning a winner cancels every
     // still-flying upstream fetch (sockets released, upstreams spared).
     // Aborts are bookkeeping-neutral by contract — see the guards below.
@@ -1178,9 +1334,13 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = []
             ? fetchByseConfig({ type: opts.type, id: opts.id, season: opts.season, episode: opts.episode, imdbId: opts.imdbId, signal: controller.signal }).then((resolved) =>
                 byseToResult(provider, resolved)
               )
-            : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
-                vidnestToResult(provider, payload)
-              )
+            : family === 'cinejoy'
+              ? Promise.resolve(opts.metaPromise)
+                  .then((meta) => fetchCinejoyProvider(provider, opts.type, opts.id, opts.season, opts.episode, meta))
+                  .then((result) => cinejoyToResult(provider, result))
+              : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
+                  vidnestToResult(provider, payload)
+                )
       )
         .then((result) => {
           healFamily(family); // any HTTP answer means the family is alive
@@ -1256,7 +1416,9 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = []
                       ? meowtvCache
                       : outcome.family === 'byse'
                         ? byseCache
-                        : vidnestCache
+                        : outcome.family === 'cinejoy'
+                          ? cinejoyCache
+                          : vidnestCache
                   ).set(key, outcome.provider.name);
                   return finish({ won: true, result: outcome.result });
                 }
@@ -1301,6 +1463,9 @@ async function resolveStream({ type, id, season, episode, server, skip, minDurat
     const byseProvider = getByseProviders().find((candidate) => candidate.name === name);
     if (byseProvider) return resolveByse({ type, id, season, episode, imdbId: imdbId || (await fetchImdbId(type, id)), server: name });
 
+    const cinejoyProvider = getCinejoyProviders().find((candidate) => candidate.name === name || candidate.slug === name);
+    if (cinejoyProvider) return resolveCinejoy({ type, id, season, episode, server: name });
+
     const provider = ALL_PEACHIFY.find((candidate) => candidate.name === name || candidate.path === name);
     if (!provider) throw new Error(`Unknown provider '${server}'`);
     const data = await fetchProvider(provider, type, id, season, episode);
@@ -1339,8 +1504,23 @@ async function resolveStream({ type, id, season, episode, server, skip, minDurat
   const byseOrder = (
     cachedByse ? [cachedByse, ...ALL_BYSE.filter((provider) => provider.name !== cachedByse.name)] : ALL_BYSE
   ).filter((provider) => !skipSet.has(provider.name) && !familyDown('byse') && !isDead('byse', provider, key));
+  const ALL_CINEJOY = getCinejoyProviders();
+  const cachedCinejoyName = cinejoyCache.get(key);
+  const cachedCinejoy = cachedCinejoyName && ALL_CINEJOY.find((provider) => provider.name === cachedCinejoyName);
+  const cinejoyOrder = (
+    cachedCinejoy ? [cachedCinejoy, ...ALL_CINEJOY.filter((provider) => provider.name !== cachedCinejoy.name)] : ALL_CINEJOY
+  ).filter((provider) => !skipSet.has(provider.name) && !familyDown('cinejoy') && !isDead('cinejoy', provider, key));
+  const metaPromise = cinejoyOrder.length ? fetchTitleMeta(type, id) : Promise.resolve(null);
 
-  const outcome = await autoRace(peachifyOrder, vidnestOrder, key, { type, id, season, episode, minDurationPromise, imdbId }, meowtvOrder, byseOrder);
+  const outcome = await autoRace(
+    peachifyOrder,
+    vidnestOrder,
+    key,
+    { type, id, season, episode, minDurationPromise, imdbId, metaPromise },
+    meowtvOrder,
+    byseOrder,
+    cinejoyOrder
+  );
   if (outcome.won) return outcome.result;
 
   // All providers failed gracefully — return empty so the client can fall back
@@ -1416,11 +1596,13 @@ module.exports = {
   resolveMeowtv,
   fetchMeowtvSubtitles,
   resolveByse,
+  resolveCinejoy,
   byseSolvePow,
   PROVIDERS,
   VIDNEST_PROVIDERS,
   MEOWTV_PROVIDERS,
   BYSE_PROVIDERS,
+  CINEJOY_PROVIDERS,
   PEACHIFY_KEY_HEX,
   PEACHIFY_API,
   VIDNEST_API,
@@ -1431,6 +1613,7 @@ module.exports = {
   getVidnestProviders,
   getMeowtvProviders,
   getByseProviders,
+  getCinejoyProviders,
   refreshUpstreamConsts,
   loadUpstreams,
   // internals — exported for the test suite (tests/extractor.test.js)
