@@ -8,6 +8,7 @@ const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 
 const TMDBService = require('./services/tmdb');
+const animeService = require('./services/anime');
 const Render = require('../public/js/render.js');
 
 const mediaRoutes = require('./routes/media');
@@ -247,59 +248,167 @@ app.get('/', async (req, res, next) => {
   }
 });
 
-// 3b. Shareable watch links: /watch/movie/603 (crawlers don't run JS and
-// never send the #fragment, so hash URLs show no preview). Bots get
-// server-rendered OG/Twitter meta (using the same 10-min memo as SSR);
-// humans 302 to the hash app. Canonical share host for the button:
-// SHARE_ORIGIN env (default: main Vercel URL).
-const SHARE_ORIGIN = (process.env.SHARE_ORIGIN || 'https://cinephilia-vercel.vercel.app').replace(/\/$/, '');
-const BOT_UA = /bot|crawl|spider|slurp|mediapartners|whatsapp|telegram|discord|twitter|facebook|linkedin|embedly|quora|pinterest|slack|skype|viber|line/i;
+// 3b. SEO + shareable deep links — real path routes. The SAME document is
+// served to bots and humans: index.html with per-page <meta>/JSON-LD injected.
+// (UA-split HTML poisoned the shared CDN cache — bot markup got served to
+// users.) The SPA boots and renders the view; the injected meta makes the
+// page crawlable. Hash URLs are legacy-only.
+const SHARE_ORIGIN = (process.env.SHARE_ORIGIN || 'https://cinephilia.in').replace(/\/$/, '');
 const escAttr = (s) =>
   String(s == null ? '' : s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
-app.get('/watch/:type/:id/:ep?', async (req, res, next) => {
+const stripTags = (v) => String(v || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const SEO_CACHE = 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400';
+const INDEX_PATH = path.join(PUBLIC_DIR, 'index.html');
+
+function appPageWithMeta({ title, description, image, url, jsonLd = null, noindex = false }) {
+  const img = image || `${SHARE_ORIGIN}/icons/icon.svg`;
+  let html;
   try {
-    const { type, id, ep } = req.params;
-    // TMDB ids are numeric; anything else falls through to the SPA. This
-    // also keeps random-ID bot scrapes from fanning out into TMDB fetches
-    // (this route sits before the rate limiter).
-    if ((type !== 'movie' && type !== 'tv') || !/^\d+$/.test(id || '')) return next();
-    const hash = `#/watch/${type}/${id}${ep ? `/${ep}` : ''}`;
-    if (!BOT_UA.test(String(req.headers['user-agent'] || ''))) {
-      return res.redirect(302, `/${hash}`);
+    html = INDEX_HTML || fs.readFileSync(INDEX_PATH, 'utf8');
+  } catch (e) {
+    html = '<!DOCTYPE html><html lang="en"><head></head><body><main id="view"></main></body></html>';
+  }
+  const set = (re, replacement) => { html = html.replace(re, replacement); };
+  set(/<title>[\s\S]*?<\/title>/, `<title>${escAttr(title)}</title>`);
+  set(/<meta name="description"[^>]*>/, `<meta name="description" content="${escAttr(description)}">`);
+  set(/<link rel="canonical"[^>]*>/, `<link rel="canonical" href="${escAttr(url)}">`);
+  set(/<meta name="robots"[^>]*>/, `<meta name="robots" content="${noindex ? 'noindex,follow' : 'index,follow'}">`);
+  set(/<meta property="og:title"[^>]*>/, `<meta property="og:title" content="${escAttr(title)}">`);
+  set(/<meta property="og:description"[^>]*>/, `<meta property="og:description" content="${escAttr(description)}">`);
+  set(/<meta property="og:url"[^>]*>/, `<meta property="og:url" content="${escAttr(url)}">`);
+  set(/<meta property="og:image"[^>]*>/, `<meta property="og:image" content="${escAttr(img)}">`);
+  set(/<meta name="twitter:title"[^>]*>/, `<meta name="twitter:title" content="${escAttr(title)}">`);
+  set(/<meta name="twitter:description"[^>]*>/, `<meta name="twitter:description" content="${escAttr(description)}">`);
+  set(/<meta name="twitter:image"[^>]*>/, `<meta name="twitter:image" content="${escAttr(img)}">`);
+  if (jsonLd) {
+    set(
+      /<script type="application\/ld\+json">[\s\S]*?<\/script>/,
+      `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>`
+    );
+  }
+  return html;
+}
+
+async function detailSeo(req, res, next, kind, id, suffix = '') {
+  try {
+    if (kind === 'anime') {
+      if (!/^\d+$/.test(id || '')) return next();
+      let info = null;
+      try { info = await animeService.info(id); } catch (e) {}
+      const title = info ? info.title : 'Anime';
+      const description = info && info.description ? stripTags(info.description).slice(0, 200) : 'Watch anime free — sub & dub, no ads, no login.';
+      const url = `${SHARE_ORIGIN}/anime/${id}`;
+      const ld = { '@context': 'https://schema.org', '@type': 'TVSeries', name: title, description, url };
+      if (info && info.image) ld.image = info.image;
+      return res.set('Cache-Control', SEO_CACHE).type('html').send(
+        appPageWithMeta({ title: `${title} — Cinephiles Areana`, description, image: info && info.image, url, jsonLd: ld })
+      );
     }
+    if ((kind !== 'movie' && kind !== 'tv') || !/^\d+$/.test(id || '')) return next();
     let info = null;
-    try {
-      info = await tmdb.fetchMediaInfo(`${type}/${id}`);
-    } catch (e) {}
-    const title = info ? info.title : type === 'movie' ? 'Movie' : 'TV Show';
-    const desc = info && info.description ? String(info.description).slice(0, 200) : 'Watch free — no ads, no login.';
-    const img = (info && (info.cover || info.image)) || `${SHARE_ORIGIN}/icons/icon.svg`;
-    const pageUrl = `${SHARE_ORIGIN}/watch/${type}/${id}${ep ? `/${ep}` : ''}`;
-    res.set('Cache-Control', 'public, max-age=300, s-maxage=3600, stale-while-revalidate=86400').type('html').send(
-      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-        `<title>${escAttr(title)} — Cinephiles Areana</title>` +
-        `<meta name="description" content="${escAttr(desc)}">` +
-        `<meta property="og:type" content="video.movie">` +
-        `<meta property="og:site_name" content="Cinephiles Areana">` +
-        `<meta property="og:title" content="${escAttr(title)}">` +
-        `<meta property="og:description" content="${escAttr(desc)}">` +
-        `<meta property="og:image" content="${escAttr(img)}">` +
-        `<meta property="og:url" content="${escAttr(pageUrl)}">` +
-        `<meta name="twitter:card" content="summary_large_image">` +
-        `<meta name="twitter:title" content="${escAttr(title)}">` +
-        `<meta name="twitter:description" content="${escAttr(desc)}">` +
-        `<meta name="twitter:image" content="${escAttr(img)}">` +
-        `<meta http-equiv="refresh" content="0;url=/${escAttr(hash)}">` +
-        `</head><body><a href="/${escAttr(hash)}">Watch ${escAttr(title)}</a></body></html>`
+    try { info = await tmdb.fetchMediaInfo(`${kind}/${id}`); } catch (e) {}
+    const title = info ? info.title : kind === 'movie' ? 'Movie' : 'TV Show';
+    const description = info && info.description ? String(info.description).slice(0, 200) : 'Watch free — no ads, no login.';
+    const image = info && (info.cover || info.image);
+    const url = `${SHARE_ORIGIN}/${kind}/${id}${suffix}`;
+    const ld = { '@context': 'https://schema.org', '@type': kind === 'tv' ? 'TVSeries' : 'Movie', name: title, description, url };
+    if (image) ld.image = image;
+    if (info && info.releaseDate) ld.datePublished = info.releaseDate;
+    if (info && info.rating) ld.aggregateRating = { '@type': 'AggregateRating', ratingValue: String(info.rating), bestRating: '10', ratingCount: '1' };
+    return res.set('Cache-Control', SEO_CACHE).type('html').send(
+      appPageWithMeta({ title: `${title} — Cinephiles Areana`, description, image, url, jsonLd: ld })
     );
   } catch (e) {
     next();
   }
+}
+
+app.get('/movie/:id', (req, res, next) => detailSeo(req, res, next, 'movie', req.params.id));
+app.get('/tv/:id', (req, res, next) => detailSeo(req, res, next, 'tv', req.params.id));
+app.get('/anime/:id', (req, res, next) => detailSeo(req, res, next, 'anime', req.params.id));
+app.get('/watch/:type/:id/:ep?', (req, res, next) => {
+  const { type, id, ep } = req.params;
+  detailSeo(req, res, next, type, id, ep ? `/${ep}` : '');
 });
+
+const LISTING_META = {
+  movies: { title: 'Movies — Cinephiles Areana', desc: 'Browse and stream popular movies in HD — no ads, no login.' },
+  'tv-shows': { title: 'TV Shows — Cinephiles Areana', desc: 'Browse and stream trending TV series — no ads, no login.' },
+  'top-rated': { title: 'Top Rated — Cinephiles Areana', desc: 'The highest-rated movies and shows, all in one place.' },
+  imdb75: { title: 'IMDb 7.5+ Movies — Cinephiles Areana', desc: 'Critically loved films rated 7.5 or higher.' },
+  anime: { title: 'Anime — Cinephiles Areana', desc: 'Stream trending and popular anime, sub & dub.' },
+};
+for (const [slug, meta] of Object.entries(LISTING_META)) {
+  app.get(`/${slug}`, (req, res) => {
+    const url = `${SHARE_ORIGIN}/${slug}`;
+    res.set('Cache-Control', SEO_CACHE).type('html').send(
+      appPageWithMeta({
+        title: meta.title,
+        description: meta.desc,
+        url,
+        jsonLd: { '@context': 'https://schema.org', '@type': 'CollectionPage', name: meta.title, description: meta.desc, url },
+      })
+    );
+  });
+}
+app.get('/genre/:genre', (req, res) => {
+  const g = String(req.params.genre || '');
+  const title = `${g} Movies — Cinephiles Areana`;
+  const desc = `Stream ${g} movies free — no ads, no login.`;
+  res.set('Cache-Control', SEO_CACHE).type('html').send(appPageWithMeta({ title, description: desc, url: `${SHARE_ORIGIN}/genre/${encodeURIComponent(g)}` }));
+});
+app.get('/search', (req, res) => {
+  res.set('Cache-Control', SEO_CACHE).type('html').send(
+    appPageWithMeta({ title: 'Search — Cinephiles Areana', description: 'Search movies, TV shows and anime.', url: `${SHARE_ORIGIN}/search`, noindex: true })
+  );
+});
+
+// Sitemap: static sections + genres + trending/recent/top titles + anime.
+let SITEMAP_MEMO = { exp: 0, xml: '' };
+app.get('/sitemap.xml', async (req, res) => {
+  try {
+    if (SITEMAP_MEMO.exp > Date.now()) return res.type('application/xml').send(SITEMAP_MEMO.xml);
+    const urls = ['/', '/movies', '/tv-shows', '/top-rated', '/imdb75', '/anime'];
+    for (const g of ['Action', 'Adventure', 'Comedy', 'Crime', 'Drama', 'Fantasy', 'Horror', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War']) {
+      urls.push(`/genre/${encodeURIComponent(g)}`);
+    }
+    const pushTitles = (list) => {
+      for (const it of list || []) {
+        const id = String((it && it.id) || '');
+        if (/^(movie|tv)\/\d+$/.test(id)) urls.push(`/${id}`);
+      }
+    };
+    try {
+      const [tm, tt, rm, top, an] = await Promise.all([
+        tmdb.fetchTrendingMovies(),
+        tmdb.fetchTrendingTvShows(),
+        tmdb.fetchRecentMovies(),
+        tmdb.fetchTopIMDB('all', 1).catch(() => null),
+        animeService.trending().catch(() => []),
+      ]);
+      pushTitles(tm);
+      pushTitles(tt);
+      pushTitles(rm);
+      pushTitles((top && (top.results || top)) || []);
+      for (const it of an || []) if (it && it.id) urls.push(`/anime/${it.id}`);
+    } catch (e) {}
+    const uniq = [...new Set(urls)];
+    const today = new Date().toISOString().slice(0, 10);
+    const xml =
+      `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">` +
+      uniq.map((u) => `<url><loc>${SHARE_ORIGIN}${u}</loc><lastmod>${today}</lastmod></url>`).join('') +
+      `</urlset>`;
+    SITEMAP_MEMO = { exp: Date.now() + 15 * 60 * 1000, xml };
+    res.type('application/xml').send(xml);
+  } catch (e) {
+    res.status(500).send('sitemap error');
+  }
+});
+
 app.use(
   express.static(PUBLIC_DIR, {
     // index.html is still no-cache (see setHeaders): it is the SOURCE OF

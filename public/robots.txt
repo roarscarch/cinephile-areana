@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+# API/byte endpoints — no SEO value, keep crawl budget on pages
+Disallow: /sources/
+Disallow: /play
+Disallow: /sign
+Disallow: /download
+Disallow: /servers/
+
+Sitemap: https://cinephilia.in/sitemap.xml

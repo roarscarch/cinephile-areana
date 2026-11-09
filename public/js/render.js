@@ -45,7 +45,7 @@
 
   function card(item) {
     const [type] = String(item.id || '').split('/');
-    const url = item.href || `#/${type}/${item.id.split('/')[1]}`;
+    const url = item.href || `/${type}/${item.id.split('/')[1]}`;
     const year = item.releaseDate || item.year || '';
     const badge = type === 'tv' ? 'tv' : 'movie';
     return `
@@ -71,14 +71,14 @@
   }
 
   // Anime cards share the poster-row styling but point at the separate
-  // anime routes (#/anime/<anilistId>) and speak anime metadata (episodes /
+  // anime routes (/anime/<anilistId>) and speak anime metadata (episodes /
   // format) instead of movie/TV labels.
   function animeCard(item) {
     const year = item.year || '';
     const sub = item.episodes ? `${item.episodes} eps` : item.format ? String(item.format).replace(/_/g, ' ') : '';
     const meta = [sub, year].filter(Boolean).map(esc).join(' · ');
     return `
-      <div class="card" data-href="#/anime/${item.id}">
+      <div class="card" data-href="/anime/${item.id}">
         <div class="poster-wrap">
           <span class="card-badge tv">Anime</span>
           ${posterImg(item.image, item.title)}
@@ -136,15 +136,15 @@
         <div class="section-head"><h2 id="tasteTitle">Picked for you</h2></div>
         ${rowWithArrows('')}
       </section>
-      ${row(rows && rows.trendingMovies, 'Trending Movies', '#/movies')}
-      ${row(rows && rows.trendingTv, 'Trending TV Shows', '#/tv-shows')}
+      ${row(rows && rows.trendingMovies, 'Trending Movies', '/movies')}
+      ${row(rows && rows.trendingTv, 'Trending TV Shows', '/tv-shows')}
       <section class="section" data-anime-row>
-        <div class="section-head"><h2>Trending Anime</h2><a class="see-all" href="#/anime">See all</a></div>
+        <div class="section-head"><h2>Trending Anime</h2><a class="see-all" href="/anime">See all</a></div>
         ${rowWithArrows(skeletonRow())}
       </section>
-      ${row(rows && rows.imdb75, 'IMDb 7.5+ Movies', '#/imdb75')}
-      ${row(rows && rows.recent, 'Now Playing', '#/movies')}
-      ${row(rows && rows.topRated, 'Top Rated', '#/top-rated')}`;
+      ${row(rows && rows.imdb75, 'IMDb 7.5+ Movies', '/imdb75')}
+      ${row(rows && rows.recent, 'Now Playing', '/movies')}
+      ${row(rows && rows.topRated, 'Top Rated', '/top-rated')}`;
   }
 
   return { TYPE_LABEL, esc, escapeHtml: esc, card, animeCard, grid, skeletonRow, rowWithArrows, homeView };

@@ -3,8 +3,30 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cinephiles Areana</title>
-  <meta name="description" content="Stream movies and TV shows instantly. Search, browse, and watch in HD." />
+  <title>Cinephiles Areana — Watch Movies, TV Shows &amp; Anime Free</title>
+  <meta name="description" content="Stream movies, TV shows and anime instantly. No ads, no login. Just press play." />
+  <link rel="canonical" href="https://cinephilia.in/" />
+  <meta name="robots" content="index,follow" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Cinephiles Areana" />
+  <meta property="og:title" content="Cinephiles Areana — Watch Movies, TV Shows &amp; Anime Free" />
+  <meta property="og:description" content="Stream movies, TV shows and anime instantly. No ads, no login." />
+  <meta property="og:url" content="https://cinephilia.in/" />
+  <meta property="og:image" content="https://cinephilia.in/icons/icon.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "Cinephiles Areana",
+      "url": "https://cinephilia.in/",
+      "potentialAction": {
+        "@type": "SearchAction",
+        "target": "https://cinephilia.in/search?q={search_term_string}",
+        "query-input": "required name=search_term_string"
+      }
+    }
+  </script>
   <meta name="theme-color" content="#0a0a12" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg" />
@@ -26,27 +48,27 @@
   <script>
     // The server SSRs the HOME view into <main id="view"> for every '/' request,
     // and the URL hash is never sent to the server — so on a deep link
-    // (#/watch/…, #/movies, #/search) that markup is already stale when the
+    // (/watch/…, /movies, /search) that markup is already stale when the
     // document is parsed. It used to stay visible until router.js (the last
     // script on the page) swapped in the real view, so refreshing a watch page
     // flashed the home page first. Mark the document BEFORE the body is parsed
     // so the CSS below hides it from the very first paint; the router removing
     // `data-ssr-home` afterwards makes the rule inert.
     try {
-      if (location.hash.replace(/^#\/?/, '')) document.documentElement.classList.add('no-ssr');
+      if (location.pathname !== '/' || location.hash.replace(/^#\/?/, '')) document.documentElement.classList.add('no-ssr');
     } catch (e) {}
   </script>
 </head>
 <body>
   <div id="app">
     <header class="nav" id="nav">
-      <a class="brand" href="#/">Cinephiles Areana</a>
+      <a class="brand" href="/">Cinephiles Areana</a>
       <nav class="nav-links" id="navLinks">
-        <a href="#/movies" data-nav="movies">Movies</a>
-        <a href="#/tv-shows" data-nav="tv">TV Shows</a>
-        <a href="#/anime" data-nav="anime">Anime</a>
-        <a href="#/top-rated" data-nav="top">Top Rated</a>
-        <a href="#/imdb75" data-nav="imdb75">IMDb 7.5+</a>
+        <a href="/movies" data-nav="movies">Movies</a>
+        <a href="/tv-shows" data-nav="tv">TV Shows</a>
+        <a href="/anime" data-nav="anime">Anime</a>
+        <a href="/top-rated" data-nav="top">Top Rated</a>
+        <a href="/imdb75" data-nav="imdb75">IMDb 7.5+</a>
       </nav>
       <div class="search-box" id="searchBox">
         <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -74,8 +96,8 @@
   <script src="/js/player.js?v=34"></script>
   <script src="/js/torrent.js?v=2"></script>
   <!-- render.js must load before router.js (shared SSR/client markup helpers) -->
-  <script src="/js/render.js?v=23"></script>
-  <script src="/js/router.js?v=37"></script>
+  <script src="/js/render.js?v=24"></script>
+  <script src="/js/router.js?v=39"></script>
   <script>
     // PWA: register the service worker (installable app + cached shell)
     if ('serviceWorker' in navigator) {

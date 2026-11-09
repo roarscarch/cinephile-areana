@@ -9,7 +9,7 @@
   const GENRES = ['Action', 'Adventure', 'Comedy', 'Crime', 'Drama', 'Fantasy', 'Horror', 'Mystery', 'Romance', 'Sci-Fi', 'Thriller', 'War'];
   // Canonical host for share links — always the main site so previews work
   // even when browsing a mirror (the /watch meta route lives on Vercel).
-  const SHARE_ORIGIN = 'https://cinephilia-vercel.vercel.app';
+  const SHARE_ORIGIN = 'https://cinephilia.in';
   // Playback ALWAYS goes to the dedicated Cloudflare play Worker (never the
   // app origin), matching the movie player. Keeps video bytes on Cloudflare.
   const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://cinephile-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
@@ -142,7 +142,7 @@
         const resumeEp = entry.episodeId || '1-1';
         return card({
           id: entry.id,
-          href: type === 'tv' ? `#/watch/${type}/${id}/${resumeEp}` : `#/watch/${type}/${id}`,
+          href: type === 'tv' ? `/watch/${type}/${id}/${resumeEp}` : `/watch/${type}/${id}`,
           title: entry.title || 'Untitled',
           image: entry.image || '',
           releaseDate: '',
@@ -282,7 +282,7 @@
           const resumeEp = episodeId || entry.episodeId || '1-1';
           return {
             id: mediaKey,
-            href: type === 'tv' ? `#/watch/${type}/${id}/${resumeEp}` : `#/watch/${type}/${id}`,
+            href: type === 'tv' ? `/watch/${type}/${id}/${resumeEp}` : `/watch/${type}/${id}`,
             title: entry.title || 'Continue watching',
             image: entry.image || '',
             releaseDate: '',
@@ -316,13 +316,13 @@
   function prefetchMedia(href) {
     if (!href || prefetched.has(href)) return;
     prefetched.add(href);
-    const routeMatch = href.match(/^#\/(movie|tv)\/(\d+)/);
+    const routeMatch = href.match(/^\/(movie|tv)\/(\d+)/);
     if (routeMatch) API.info(`${routeMatch[1]}/${routeMatch[2]}`).catch(() => {});
   }
 
   function bindCards(scope) {
     scope.querySelectorAll('.card[data-href]').forEach((cardEl) => {
-      cardEl.addEventListener('click', () => (location.hash = cardEl.dataset.href));
+      cardEl.addEventListener('click', () => navigate(cardEl.dataset.href));
       cardEl.addEventListener('mouseenter', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
       cardEl.addEventListener('touchstart', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
     });
@@ -365,7 +365,7 @@
           .map((media) => {
             const [type, id] = media.id.split('/');
             return `
-              <div class="sd-item" data-href="#/${type}/${id}">
+              <div class="sd-item" data-href="/${type}/${id}">
                 ${media.image ? `<img class="sd-poster" src="${media.image}" alt="" loading="lazy"/>` : `<div class="sd-poster"></div>`}
                 <div class="sd-info">
                   <div class="sd-title">${escapeHtml(media.title)}</div>
@@ -375,12 +375,12 @@
               </div>`;
           })
           .join('') +
-          `<div class="sd-item" data-href="#/search?q=${encodeURIComponent(query)}">
+          `<div class="sd-item" data-href="/search?q=${encodeURIComponent(query)}">
               <div class="sd-info"><div class="sd-title" style="color:var(--accent)">See all results for “${escapeHtml(query)}”</div></div>
             </div>`;
         searchDropdown.querySelectorAll('.sd-item').forEach((cardEl) =>
           cardEl.addEventListener('click', () => {
-            location.hash = cardEl.dataset.href;
+            navigate(cardEl.dataset.href);
             closeSearch();
           })
         );
@@ -437,7 +437,7 @@
   searchInput.addEventListener('focus', () => searchInput.value && runSearch(searchInput.value));
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && searchInput.value.trim()) {
-      location.hash = `#/search?q=${encodeURIComponent(searchInput.value.trim())}`;
+      navigate(`/search?q=${encodeURIComponent(searchInput.value.trim())}`);
       closeSearch();
       document.getElementById('searchBox').classList.remove('mobile-open', 'hidden');
     }
@@ -492,7 +492,7 @@
     const heroBtn = document.getElementById('heroSearchBtn');
     if (heroInput && heroBtn) {
       const submitHeroSearch = () => {
-        if (heroInput.value.trim()) location.hash = `#/search?q=${encodeURIComponent(heroInput.value.trim())}`;
+        if (heroInput.value.trim()) navigate(`/search?q=${encodeURIComponent(heroInput.value.trim())}`);
       };
       heroBtn.addEventListener('click', submitHeroSearch);
       heroInput.addEventListener('keydown', (e) => e.key === 'Enter' && submitHeroSearch());
@@ -583,7 +583,7 @@
     view.innerHTML = `
       <div class="page-head">
         <h1>${escapeHtml(title)}</h1><p>${escapeHtml(sub)}</p>
-        ${kind === 'movies' || kind === 'genre' ? `<div class="chips">${GENRES.map((g) => `<a class="chip ${genre === g ? 'active' : ''}" href="#/genre/${g}">${g}</a>`).join('')}</div>` : ''}
+        ${kind === 'movies' || kind === 'genre' ? `<div class="chips">${GENRES.map((g) => `<a class="chip ${genre === g ? 'active' : ''}" href="/genre/${g}">${g}</a>`).join('')}</div>` : ''}
       </div>
       <div class="section" id="browseGrid">
         <div class="grid">${'<div class="skel" style="aspect-ratio:2/3"></div>'.repeat(18)}</div>
@@ -777,7 +777,7 @@
     form.addEventListener('submit', (e) => {
       e.preventDefault();
       const term = view.querySelector('#animeSearchInput').value.trim();
-      location.hash = term ? `#/anime?q=${encodeURIComponent(term)}` : '#/anime';
+      navigate(term ? `/anime?q=${encodeURIComponent(term)}` : '/anime');
     });
 
     const fillRow = (kind, items) => {
@@ -840,7 +840,7 @@
     try {
       info = await API.anime.info(id);
     } catch (e) {
-      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this anime</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="#/anime">Back to anime</a></div>`;
+      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this anime</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/anime">Back to anime</a></div>`;
       return;
     }
 
@@ -864,7 +864,7 @@
             <p class="detail-desc">${escapeHtml(stripTags(info.description) || 'No description available.')}</p>
             <div class="play-actions">
               <button class="btn btn-primary" id="animePlay">Watch now</button>
-              <a class="btn" href="#/anime">← All anime</a>
+              <a class="btn" href="/anime">← All anime</a>
             </div>
           </div>
         </div>
@@ -884,7 +884,7 @@
     bindCards(view);
 
     view.querySelector('#animePlay').addEventListener('click', () => {
-      location.hash = `#/anime-watch/${id}/1`;
+      navigate(`/anime-watch/${id}/1`);
     });
 
     if (episodes) {
@@ -892,14 +892,14 @@
       const cap = Math.min(episodes, 300);
       let html = '';
       for (let n = 1; n <= cap; n++) {
-        html += `<div class="episode" data-href="#/anime-watch/${id}/${n}">
+        html += `<div class="episode" data-href="/anime-watch/${id}/${n}">
           <div class="ep-thumb" style="background:linear-gradient(135deg,var(--surface-2),var(--surface))"></div>
           <div class="ep-body"><div class="ep-title">Episode ${n}</div><div class="ep-num">E${n}</div></div>
         </div>`;
       }
       epGrid.innerHTML = html;
       epGrid.querySelectorAll('.episode').forEach((episodeEl) =>
-        episodeEl.addEventListener('click', () => (location.hash = episodeEl.dataset.href))
+        episodeEl.addEventListener('click', () => navigate(episodeEl.dataset.href))
       );
     }
   };
@@ -923,7 +923,7 @@
     view.innerHTML = `
       <div class="watch">
         <div class="watch-head">
-          <a class="back" href="#/anime/${id}">← Back to anime</a>
+          <a class="back" href="/anime/${id}">← Back to anime</a>
           <h1>${escapeHtml(title)}</h1>
           <span class="sub">Episode ${ep}</span>
         </div>
@@ -1013,8 +1013,8 @@
     }
 
     audioBtn.addEventListener('click', () => load(!dub));
-    if (nextBtn) nextBtn.addEventListener('click', () => (location.hash = `#/anime-watch/${id}/${ep + 1}`));
-    if (epSelect) epSelect.addEventListener('change', () => (location.hash = `#/anime-watch/${id}/${epSelect.value}`));
+    if (nextBtn) nextBtn.addEventListener('click', () => navigate(`/anime-watch/${id}/${ep + 1}`));
+    if (epSelect) epSelect.addEventListener('change', () => navigate(`/anime-watch/${id}/${epSelect.value}`));
 
     load(dub);
   };
@@ -1052,7 +1052,7 @@
     try {
       info = await API.info(mediaId);
     } catch (e) {
-      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this title</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="#/">Back home</a></div>`;
+      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this title</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/">Back home</a></div>`;
       return;
     }
 
@@ -1107,10 +1107,10 @@
     const playBtn = view.querySelector('#playBtn');
     playBtn.addEventListener('click', () => {
       if (type === 'movie') {
-        location.hash = `#/watch/movie/${id}`;
+        navigate(`/watch/movie/${id}`);
       } else {
         const ep = episodes[0];
-        location.hash = ep ? `#/watch/tv/${id}/${ep.id}` : `#/watch/tv/${id}/1-1`;
+        navigate(ep ? `/watch/tv/${id}/${ep.id}` : `/watch/tv/${id}/1-1`);
       }
     });
 
@@ -1187,7 +1187,7 @@
           .filter((episode) => episode.season === season)
           .map(
             (episode) => `
-            <div class="episode" data-href="#/watch/tv/${id}/${episode.id}">
+            <div class="episode" data-href="/watch/tv/${id}/${episode.id}">
               <div class="ep-thumb" style="background:linear-gradient(135deg,var(--surface-2),var(--surface))"></div>
               <div class="ep-body">
                 <div class="ep-title">${episode.number}. ${escapeHtml(episode.title || 'Episode ' + episode.number)}</div>
@@ -1197,7 +1197,7 @@
           )
           .join('');
         epGrid.querySelectorAll('.episode').forEach((episodeEl) =>
-          episodeEl.addEventListener('click', () => (location.hash = episodeEl.dataset.href))
+          episodeEl.addEventListener('click', () => navigate(episodeEl.dataset.href))
         );
       }
       select.addEventListener('change', () => renderSeason(parseInt(select.value)));
@@ -1231,7 +1231,7 @@
     view.innerHTML = `
       <div class="watch">
         <div class="watch-head">
-          <a class="back" href="#/${type}/${id}">← Back to details</a>
+          <a class="back" href="/${type}/${id}">← Back to details</a>
           <h1>${escapeHtml(title)}</h1>
           <span class="sub">${epLabel}</span>
         </div>
@@ -1632,7 +1632,7 @@
         },
         { once: true }
       );
-      const goNext = () => { location.hash = `#/watch/${type}/${id}/${nextEpisode.id}`; };
+      const goNext = () => { navigate(`/watch/${type}/${id}/${nextEpisode.id}`); };
       nextBtn.onclick = goNext;
       nextChip.onclick = goNext;
       nextChip.hidden = false;
@@ -1663,24 +1663,66 @@
     });
   };
 
-  // ---------------- router ----------------
-  function parseHash() {
-    const h = location.hash.replace(/^#\/?/, '');
-    const [path, query] = h.split('?');
-    const parts = path.split('/').filter(Boolean);
+  // ---------------- router (History API — real paths for SEO) ----------------
+  function parseRoute() {
+    let path = location.pathname.replace(/^\//, '');
+    let query = location.search.replace(/^\?/, '');
+    // Legacy hash links still work: /#/movies -> /movies
+    if (location.hash.startsWith('#/')) {
+      const legacy = location.hash.slice(1);
+      const [lp, lq] = legacy.split('?');
+      path = lp.replace(/^\//, '');
+      query = lq || query;
+    }
+    const parts = path.split('/').filter(Boolean).map((p) => decodeURIComponent(p));
     const params = Object.fromEntries(new URLSearchParams(query || ''));
     return { parts, params };
   }
+  function stripLegacyHash() {
+    if (location.hash.startsWith('#/')) {
+      try { history.replaceState(null, '', location.hash.slice(1) || '/'); } catch (e) {}
+    }
+  }
+  function navigate(href, replace = false) {
+    if (!href) return;
+    const target = String(href);
+    if (replace) history.replaceState(null, '', target);
+    else history.pushState(null, '', target);
+    route();
+  }
+
+  // Same-origin <a href="/..."> links stay SPA-fast but keep real hrefs so
+  // crawlers can follow them (hash links were invisible to search engines).
+  document.addEventListener('click', (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest('a[href]');
+    if (!a || (a.target && a.target !== '_self') || a.hasAttribute('download')) return;
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('http') || href.startsWith('//') || href.startsWith('mailto:') || href.startsWith('tel:')) return;
+    e.preventDefault();
+    navigate(href);
+  });
+
+  const CANONICAL_ORIGIN = 'https://cinephilia.in';
+  function setCanonical() {
+    try {
+      let link = document.querySelector('link[rel="canonical"]');
+      if (!link) { link = document.createElement('link'); link.rel = 'canonical'; document.head.appendChild(link); }
+      link.href = CANONICAL_ORIGIN + location.pathname;
+    } catch (e) {}
+  }
 
   async function route() {
-    const { parts, params } = parseHash();
+    stripLegacyHash();
+    setCanonical();
+    const { parts, params } = parseRoute();
     destroyAnimeHls();
     // The SSR home markup only survives until the first navigation — any
     // other view replaces it, so the flag must not outlive that render
     // (otherwise a later home visit would skip its template and query DOM
     // that no longer exists).
     if (parts.length) {
-      // Deep link (#/watch/…, #/movies…): the server's pre-rendered HOME is
+      // Deep link (/watch/…, /movies…): the server's pre-rendered HOME is
       // stale for this URL. index.html's head script already hides it before
       // the first paint; dropping the nodes here as well closes the second
       // window — between removing the flag (which re-exposes it) and the async
@@ -1721,6 +1763,8 @@
     views.home();
   }
 
-  window.addEventListener('hashchange', route);
+  window.addEventListener('popstate', route);
+  // Legacy hash deep link on first load: rewrite to a path (no history entry).
+  stripLegacyHash();
   route();
 })();
