@@ -407,6 +407,25 @@
   }
 
   document.getElementById('searchToggle').addEventListener('click', openMobileSearch);
+
+  // Mobile navigation: on ≤760px the nav links collapse; this hamburger opens
+  // them (so Movies/TV/Anime/Top Rated/IMDb are reachable on a phone).
+  const menuToggle = document.getElementById('menuToggle');
+  const closeMenu = () => {
+    navLinks.classList.remove('open');
+    if (menuToggle) menuToggle.setAttribute('aria-expanded', 'false');
+  };
+  if (menuToggle) {
+    menuToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = navLinks.classList.toggle('open');
+      menuToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  }
+  navLinks.addEventListener('click', (e) => {
+    if (e.target.closest('a')) closeMenu();
+  });
+  window.addEventListener('hashchange', closeMenu);
   searchInput.addEventListener('input', () => runSearch(searchInput.value));
   searchInput.addEventListener('focus', () => searchInput.value && runSearch(searchInput.value));
   searchInput.addEventListener('keydown', (e) => {
@@ -418,6 +437,7 @@
   });
   document.addEventListener('click', (e) => {
     if (!e.target.closest('.search-box')) closeSearch();
+    if (!e.target.closest('.nav-links') && !e.target.closest('#menuToggle')) closeMenu();
   });
 
   // ---------------- views ----------------
@@ -482,6 +502,25 @@
     fillHistoryRow();
     // Taste row (hidden until enough history; fills async)
     fillTasteRow();
+
+    // Anime row: its own catalog (AniList/Megaplay), so it is NOT part of the
+    // TMDB data-row hydration below. Fetched independently and rendered with
+    // animeCard when it lands. Runs for both SSR and client-render paths.
+    const hydrateAnimeHomeRow = () => {
+      API.anime
+        .trending()
+        .then((items) => {
+          if (!view.isConnected || !document.contains(view)) return;
+          const section = view.querySelector('.section[data-anime-row]');
+          const list = Array.isArray(items) ? items : [];
+          if (!section || !list.length) return;
+          section.querySelector('.row-wrap').outerHTML = rowWithArrows(list.slice(0, 14).map(animeCard).join(''));
+          bindRowArrows(view);
+          bindCards(view);
+        })
+        .catch(() => {});
+    };
+    hydrateAnimeHomeRow();
 
     if (ssr) {
       // Trending rows are already painted server-side — wire them up with zero

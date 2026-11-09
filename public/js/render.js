@@ -138,6 +138,10 @@
       </section>
       ${row(rows && rows.trendingMovies, 'Trending Movies', '#/movies')}
       ${row(rows && rows.trendingTv, 'Trending TV Shows', '#/tv-shows')}
+      <section class="section" data-anime-row>
+        <div class="section-head"><h2>Trending Anime</h2><a class="see-all" href="#/anime">See all</a></div>
+        ${rowWithArrows(skeletonRow())}
+      </section>
       ${row(rows && rows.imdb75, 'IMDb 7.5+ Movies', '#/imdb75')}
       ${row(rows && rows.recent, 'Now Playing', '#/movies')}
       ${row(rows && rows.topRated, 'Top Rated', '#/top-rated')}`;
