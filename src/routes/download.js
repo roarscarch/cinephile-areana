@@ -13,12 +13,44 @@ const path = require('path');
 const { Readable } = require('stream');
 const { spawn } = require('child_process');
 const { STREAM_UA } = require('./stream');
+const { listDownloads } = require('../services/4khdhub');
 
-module.exports = function downloadRoutes() {
+module.exports = function downloadRoutes(tmdb) {
   const router = Router();
 
+  // 4KHDHub download files (2160p/1080p MKV — for saving, not playback).
+  // Node/Vercel only: the resolver needs multi-hop scraping (see service).
+  router.get('/downloads', async (req, res) => {
+    const mediaId = String(req.query.mediaId || '');
+    if (!/^(movie|tv)\/[\w-]+$/.test(mediaId)) {
+      return res.status(400).json({ error: 'mediaId query parameter must be movie/<id> or tv/<id>' });
+    }
+    const [type] = mediaId.split('/');
+    const season = parseInt(req.query.season, 10) || null;
+    const episode = parseInt(req.query.episode, 10) || null;
+    try {
+      let title = String(req.query.title || '');
+      let year = parseInt(req.query.year, 10) || null;
+      if ((!title || !year) && tmdb) {
+        try {
+          const info = await tmdb.fetchMediaInfo(mediaId);
+          if (info) {
+            title = title || info.title || '';
+            year = year || parseInt(String(info.releaseDate || '').slice(0, 4), 10) || null;
+          }
+        } catch (e) {}
+      }
+      if (!title) return res.status(404).json({ error: 'Title unavailable for this mediaId' });
+      const items = await listDownloads({ type, title, year, season, episode });
+      res.set('Cache-Control', 'no-store');
+      res.json({ items });
+    } catch (error) {
+      res.status(502).json({ error: `4KHDHub lookup failed: ${error.message}` });
+    }
+  });
+
   router.get('/download', (req, res) => {
-    const { url, ref, title, hls, subs } = req.query;
+    const { url, ref, title, hls, subs, ext } = req.query;
     if (!url) return res.status(400).json({ error: 'url query parameter is required' });
     if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Invalid url' });
     const referer = ref || 'https://peachify.top/';
@@ -37,26 +69,34 @@ module.exports = function downloadRoutes() {
       .filter(Boolean)
       .slice(0, 12); // cap the track count — no point muxing 50 languages
     const remux = hls === '1' || tracks.length > 0;
+    const safeExt = /^(mkv|mp4|avi|webm|mov|m4v)$/i.test(String(ext || '')) ? String(ext).toLowerCase() : null;
 
     res.set({
-      'Content-Disposition': `attachment; filename="${base}.${remux ? 'mp4' : (path.extname(new URL(url).pathname).replace(/[^a-z0-9]/gi, '') || 'mp4')}"`,
+      'Content-Disposition': `attachment; filename="${base}.${remux ? 'mp4' : (safeExt || path.extname(new URL(url).pathname).replace(/[^a-z0-9]/gi, '') || 'mp4')}"`,
       'Cache-Control': 'no-store',
       'Access-Control-Allow-Origin': '*',
     });
 
     if (!remux) {
-      // direct source, no subs: stream through like /play, flagged as a download
-      fetch(url, { headers: { Referer: referer, 'User-Agent': STREAM_UA } })
+      // direct source, no subs: stream through like /play, flagged as a download.
+      // Range is forwarded so big files (4KHDHub REMUXes) resume instead of restarting.
+      const upstreamHeaders = { Referer: referer, 'User-Agent': STREAM_UA };
+      if (req.headers.range) upstreamHeaders.Range = req.headers.range;
+      fetch(url, { headers: upstreamHeaders })
         .then((upstream) => {
           if (!upstream.ok && upstream.status !== 206) return res.status(upstream.status).json({ error: `Upstream ${upstream.status}` });
+          if (upstream.status === 206) res.status(206);
           res.set('Content-Type', upstream.headers.get('content-type') || 'application/octet-stream');
-          const contentLength = upstream.headers.get('content-length');
-          if (contentLength) res.set('Content-Length', contentLength);
+          res.set('Accept-Ranges', 'bytes');
+          for (const header of ['content-length', 'content-range']) {
+            const value = upstream.headers.get(header);
+            if (value) res.set(header, value);
+          }
           return new Promise((resolve, reject) => {
             const body = Readable.fromWeb(upstream.body);
             body.on('error', (streamError) => {
               res.destroy();
-              reject(e);
+              reject(streamError);
             });
             res.on('close', resolve);
             body.pipe(res);

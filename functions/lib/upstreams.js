@@ -43,6 +43,7 @@ export function loadUpstreams(env) {
       meowtv: normalizeFamily(fams.meowtv),
       byse: normalizeFamily(fams.byse),
       cinejoy: normalizeFamily(fams.cinejoy),
+      vidcore: normalizeFamily(fams.vidcore),
     },
     canary: (raw && raw.canary) || {},
   };

@@ -14,8 +14,8 @@ and go dark constantly. Everything here can change overnight.
   the player's own JavaScript (or public reverse-engineering repos) and then
   calling the same endpoints it does.
 - Routing lives in [`config/upstreams.json`](config/upstreams.json) — a
-  `families` table (`peachify`, `vidnest`, `meowtv`, `byse`; `cinejoy` is present
-  but disabled — see below) consumed by the
+  `families` table (`peachify`, `vidnest`, `meowtv`, `byse`, `vidcore`;
+  `cinejoy` is present but disabled — see below) consumed by the
   resolver (`src/services/extractor.js`) and mirrored for the edge
   (`functions/lib/extractor.js`).
 - Anime is a **separate catalog**: [AniList](https://anilist.co) metadata +
@@ -171,6 +171,35 @@ Useful greppable strings that have paid off:
   none, so `providers` is left empty in config. Re-enable by restoring the
   server list once the CDN stops blocking datacenter/proxy IPs.
 
+### Vidcore — `vidcore.io` ✅ added
+
+- Flow: `GET /{movie|tv}/{tmdbId}[/{s}/{e}]/` → the Next.js **flight payload**
+  carries an escaped bootstrap token (`\"en\":\"<token>\"`) →
+  `GET enc-dec.app/api/enc-vidcore?text={token}&stage=1` → `{stage1, token}` →
+  **POST** `stage1` with `X-CSRF-Token` → opaque text →
+  `GET enc-vidcore?text={that}&stage=2` → `{servers, stream, token}` →
+  **POST** `servers` (CSRF'd) → **POST** `dec-vidcore` →
+  `[{name, description, data}]` (Supreme 4K, Prime, …) → **POST**
+  `{stream}/{data}` → **POST** `dec-vidcore` → `{url (HLS master), tracks}`.
+- The one-shot bootstrap URL + CSRF pair are minted per page load; we don't
+  cache them (each resolve re-walks the 4-hop dance, ~3 s, cached per title
+  via the usual last-known-good map).
+- Streams are HLS masters on `*.goldenkite.top` with an `?s=` signature. The
+  CDN **403s unless UA + Referer + Origin are ALL sent** — playback rides
+  `/play` with vidcore referer/origin. Their nginx also **403s any request
+  carrying `X-Requested-With`** (the official sample sets it — drop it).
+- Verified end-to-end: TV + movie both resolve in ~3 s; master → 4K/1080p
+  variants → real video segments.
+- Found via the EncDecEndpoints repo (`samples/vidcore.py`); the sample's
+  regex needed adjusting for the RSC payload's backslash-escaped quotes.
+- **Edge caveat:** vidcore.io is fronted by Cloudflare with a WAF rule that
+  403s datacenter/hosting ASNs — it answers fine from residential IPs (local
+  dev, self-host) but both Vercel (AWS) and Cloudflare Workers egress get 403
+  on the page fetch. Same class of block as AniList/cinejoy. It stays wired:
+  the failure is a fast 403 (not a hang), the family breaker skips it after
+  the first miss, and the race still crowns other families. If they ever
+  relax the rule, prod picks it back up with no change.
+
 ### Tried, not added (and why)
 
 | Candidate | Endpoint | Verdict |
@@ -179,8 +208,13 @@ Useful greppable strings that have paid off:
 | **Videasy** | `api.wecollege.net/{server}/sources` | 18 servers incl. 4K, but `api.wecollege.net` returns a **Cloudflare challenge (403)** to our IP; blocked. |
 | **Vidfast** | `vidfast.vc` | Two-stage `enc-vidfast` + CSRF token handshake — viable but heavy; deferred. |
 | **Vidup** | `vidup.to` | Same two-stage design as Vidfast — deferred. |
+| **Cinesrc** | `cinesrc.st` | Alive but heavy: 2-stage PoW challenges + Next.js `Next-Action` server actions + per-request bootstrap cookies; all challenge-solving rides `enc-dec.app` (`enc-cinesrc` + `solve_stage1/2`). Viable, deferred until a source gap justifies the CPU cost. |
+| **Flixcloud** | `flixcloud.cc/e/{token}` | Embed-hoster decryptor (used by reanime.to, 1anime.app), not a TMDB-keyed catalog — no id-based lookup, so it can't join the race. |
+| **Abyss** | `playhydrax.com/?v={contentId}` | Needs a site-specific content id (no TMDB lookup) — same blocker as OneTouchTV. |
+| **Rapidshare** | (yflix embeds) | Pure decryptor (`dec-rapid`) for `yflix.to`/`1movies` embed URLs — only useful behind the yflix database flow (below), which stays deferred. |
+| **4KHDHub** (integrated for downloads) | `4khdhub.one` (domain rotates via phisher98/TVVVV domains.json) | Real 2160p/1080p files — **HEVC/x265 MKV, often BluRay REMUX**, so browsers cannot play them, but they are ideal for the `/download` route (saved to disk, played in VLC/mpv). Node-only provider `src/services/4khdhub.js`: search → details → `greenmotors.club/?id=` 302 → obfuscated `s('o')` blob (b64→b64→rot13→b64) → `hubcloud.pw/drive/{id}` → `gamerxyt.com/hubcloud.php` → direct signed file URL (R2/Workers CDN, ~8h validity). UI: watch page ⋯ → "↓ 4K files". Downloads forward `Range` (206, resumable). Not edge compatible (multi-hop scraping) — Node/Vercel only. (The 4K *playback* ecosystem — vidfast, videasy, vidlink's CDN, vidrock (dead upstream) — all bot-gates or rate-limits datacenter IPs, so 4K streaming in prod needs a residential-IP hop; vidcore covers that locally/self-hosted.) |
 | **OneTouchTV** | `api3.devcorp.me/web/vod/{slug}` | Needs a site-specific content **slug** (not TMDB); requires scraping the catalog. |
-| **1movies / yflix** | `yflix.to/ajax/*` | Multi-step: scrape page → encrypt ids → parse HTML; also needs `parse-html` decoder. Deferred. |
+| **1movies / yflix** | `yflix.to/ajax/*` | The new `enc-dec.app/db/flix/find?tmdb_id=` database removes the catalog-scraping step (it maps TMDB → flix `eid` directly, then `links/list` + `links/view` + `dec-movies-flix`). Still 3+ chained requests with encrypted query params; deferred, but the DB makes it a realistic future source. |
 
 ### Megaplay — `megaplay.buzz` ✅ anime
 
@@ -206,7 +240,7 @@ Useful greppable strings that have paid off:
 
 ```
 config/upstreams.json
-   families: { peachify, vidnest, meowtv, byse, cinejoy }  ← hosts, referers, slugs
+   families: { peachify, vidnest, meowtv, byse, cinejoy, vidcore }  ← hosts, referers, slugs
    (cinejoy present but providers:[] while its CDN blocks the proxy)
         │
         ├─ src/services/upstreams.js        (Node: reads config + UPSTREAMS_JSON env)
@@ -299,4 +333,4 @@ tracked **per title**, not globally:
 
 *Last updated: this build — families `peachify` (dead, kept for shape),
 `vidnest` (core), `meowtv` (added), `byse` (added), `cinejoy` (disabled: CDN
-blocks proxy); anime via AniList + Megaplay.*
+blocks proxy), `vidcore` (added); anime via AniList + Megaplay.*

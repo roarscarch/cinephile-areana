@@ -5,13 +5,13 @@
 //   _validateSubtitles loopback via 127.0.0.1 -> direct fetchSubdlVtt() call
 //   env comes from constructor (Pages/Workers bindings), not process.env
 
-import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, MEOWTV_PROVIDERS, BYSE_PROVIDERS, CINEJOY_PROVIDERS, signPlayUrl } from './extractor.js';
+import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, MEOWTV_PROVIDERS, BYSE_PROVIDERS, CINEJOY_PROVIDERS, VIDCORE_PROVIDERS, signPlayUrl } from './extractor.js';
 import { fetchEnglishSubtitles, fetchSubdlVtt } from './subtitles.js';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
 const probeCache = new Map(); // per-title server availability (short TTL, per isolate)
-const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS, ...MEOWTV_PROVIDERS, ...BYSE_PROVIDERS, ...CINEJOY_PROVIDERS];
+const SERVERS = [...PROVIDERS, ...VIDNEST_PROVIDERS, ...MEOWTV_PROVIDERS, ...BYSE_PROVIDERS, ...CINEJOY_PROVIDERS, ...VIDCORE_PROVIDERS];
 
 function withDeadline(promise, ms) {
   let timeoutId;
@@ -210,6 +210,7 @@ export class CinephileHQ {
       ...t.families.meowtv.providers,
       ...t.families.byse.providers,
       ...t.families.cinejoy.providers,
+      ...t.families.vidcore.providers,
     ].map((s) => ({ name: s.name }));
   }
 

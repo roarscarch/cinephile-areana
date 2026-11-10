@@ -54,6 +54,17 @@
       "providers": [],
       "_note": "Resolves via API, but the CDN (/dontscrape/ loop) blocks Cloudflare Worker egress so /play 502s. Enable by restoring providers when that changes."
     },
+    "vidcore": {
+      "api": "https://vidcore.io",
+      "referer": "https://vidcore.io/",
+      "origin": "https://vidcore.io",
+      "providers": [
+        {
+          "name": "vidcore",
+          "slug": "vidcore"
+        }
+      ]
+    },
     "vidnest": {
       "api": "https://new.vidnest.fun",
       "referer": "https://vidnest.fun/",

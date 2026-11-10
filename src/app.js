@@ -465,7 +465,7 @@ app.use(mediaRoutes(tmdb));
 app.use(browseRoutes(tmdb));
 app.use(embedRoutes(tmdb));
 app.use(streamRoutes());
-app.use(downloadRoutes());
+app.use(downloadRoutes(tmdb));
 app.use(animeRoutes()); // separate anime section (AniList + Megaplay, no TMDB)
 
 // 8. SPA fallback

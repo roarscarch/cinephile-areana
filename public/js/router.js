@@ -12,7 +12,13 @@
   const SHARE_ORIGIN = 'https://cinephilia.in';
   // Playback ALWAYS goes to the dedicated Cloudflare play Worker (never the
   // app origin), matching the movie player. Keeps video bytes on Cloudflare.
-  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://cinephile-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
+  // Local dev (localhost/private LAN) uses the app's own /play route instead —
+  // residential-IP-only CDNs (vidcore) reject the Worker's datacenter IPs.
+  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ ?? (
+    /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname)
+      ? ''
+      : 'https://cinephile-play.cinephilia-areana.workers.dev'
+  )).replace(/\/$/, '');
   // Per-title server availability probe results, cached in memory for a short
   // TTL (page session). Kept out of localStorage — this is "which servers have
   // a source for THIS title right now", not a permanent record.
@@ -1269,6 +1275,7 @@
             <div class="vol-pop more-pop" id="morePop" hidden>
               <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
               <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
+              <button class="subs-select ctl-btn" id="dlFilesBtn" title="Download 4KHDHub files (MKV — best with VLC)">↓ 4K files</button>
             </div>
           </span>
           <span class="vol-wrap">
@@ -1395,6 +1402,79 @@
       a.remove();
       toastMsg('Download started — check your Downloads folder.');
     });
+
+    // 4KHDHub files (Node API only): 2160p/1080p MKV sources for saving —
+    // HEVC/REMUX won't play in the browser, but VLC/mpv handles them.
+    const dlFilesBtn = view.querySelector('#dlFilesBtn');
+    if (dlFilesBtn) {
+      dlFilesBtn.addEventListener('click', async () => {
+        morePop.hidden = true;
+        const [s, e] = episodeId.includes('-') ? episodeId.split('-') : ['', ''];
+        const q = new URLSearchParams({ mediaId });
+        if (info && info.title) q.set('title', info.title);
+        if (info && info.releaseDate) q.set('year', String(info.releaseDate).slice(0, 4));
+        if (type === 'tv') {
+          q.set('season', s);
+          q.set('episode', e);
+        }
+        toastMsg('Looking up 4KHDHub files…');
+        let items = [];
+        let nodeOnly = false;
+        try {
+          const r = await fetch(`/downloads?${q.toString()}`);
+          const isJson = (r.headers.get('content-type') || '').includes('application/json');
+          if (r.ok && isJson) items = (await r.json()).items || [];
+          else nodeOnly = !isJson; // static edge host — no Node /downloads route
+        } catch {}
+        if (nodeOnly) return toastMsg('4K downloads run on the Node backend — not available on this host.');
+        if (!items.length) return toastMsg('No 4KHDHub files found for this title.');
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+          <div class="modal-box" role="dialog" aria-label="Download files">
+            <button class="modal-close" aria-label="Close">✕</button>
+            <div class="dl-files">
+              <h3>4KHDHub downloads</h3>
+              <p class="dl-files-note">Saved as-is (MKV/HEVC) — play with VLC/mpv. Large files: resumable.</p>
+              <div class="dl-files-list">
+                ${items
+                  .map(
+                    (it, i) => `
+                  <a class="dl-file" href="#" data-i="${i}">
+                    <span class="dl-file-q">${escapeHtml(it.quality || 'HD')}</span>
+                    <span class="dl-file-name">${escapeHtml(it.filename || title)}</span>
+                    <span class="dl-file-meta">${escapeHtml([it.size, it.hoster].filter(Boolean).join(' · '))}</span>
+                  </a>`
+                  )
+                  .join('')}
+              </div>
+            </div>
+          </div>`;
+        const close = () => overlay.remove();
+        overlay.addEventListener('click', (ev) => {
+          if (ev.target === overlay || ev.target.closest('.modal-close')) close();
+        });
+        overlay.querySelectorAll('.dl-file').forEach((row) => {
+          row.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            const it = items[Number(row.dataset.i)];
+            if (!it) return;
+            const p = new URLSearchParams({ url: it.url, title: it.filename || title });
+            if (it.referer) p.set('ref', it.referer);
+            if (it.ext) p.set('ext', it.ext);
+            const a = document.createElement('a');
+            a.href = `/download?${p.toString()}`;
+            a.download = '';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            close();
+            toastMsg('Download started — check your Downloads folder.');
+          });
+        });
+        document.body.appendChild(overlay);
+      });
+    }
     // volume boost (>100% via Web Audio gain). Button shows the live %, popup
     // has a 10–2000% slider; the player routes through gain+limiter.
     const volBtn = view.querySelector('#volBtn');

@@ -48,6 +48,7 @@ function normalize(raw) {
       meowtv: normalizeFamily('meowtv', fams.meowtv),
       byse: normalizeFamily('byse', fams.byse),
       cinejoy: normalizeFamily('cinejoy', fams.cinejoy),
+      vidcore: normalizeFamily('vidcore', fams.vidcore),
     },
     canary: (raw && raw.canary) || {},
   };

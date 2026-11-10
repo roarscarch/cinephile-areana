@@ -97,6 +97,18 @@ function cinejoyReferer() {
 function cinejoyOrigin() {
   return cinejoy().origin || 'https://cinejoy.pk';
 }
+function vidcore() {
+  return cfg().families.vidcore || {};
+}
+function vidcoreApi() {
+  return vidcore().api || 'https://vidcore.io';
+}
+function vidcoreReferer() {
+  return vidcore().referer || 'https://vidcore.io/';
+}
+function vidcoreOrigin() {
+  return vidcore().origin || 'https://vidcore.io';
+}
 const PEACHIFY_REFERER = 'https://peachify.top/';
 
 // Provider order mirrors the site's own player auto-cycling. Read live from
@@ -115,6 +127,9 @@ function getByseProviders() {
 }
 function getCinejoyProviders() {
   return cinejoy().providers || [];
+}
+function getVidcoreProviders() {
+  return vidcore().providers || [];
 }
 // Back-compat consts: string values captured from the CURRENT config for
 // template literals + legacy importers. Refreshed by refreshUpstreamConsts().
@@ -137,6 +152,7 @@ const VIDNEST_PROVIDERS = [];
 const MEOWTV_PROVIDERS = [];
 const BYSE_PROVIDERS = [];
 const CINEJOY_PROVIDERS = [];
+const VIDCORE_PROVIDERS = [];
 function syncExportedProviderLists() {
   try {
     PROVIDERS.length = 0;
@@ -149,6 +165,7 @@ function syncExportedProviderLists() {
     for (const p of getByseProviders()) BYSE_PROVIDERS.push(p);
     CINEJOY_PROVIDERS.length = 0;
     for (const p of getCinejoyProviders()) CINEJOY_PROVIDERS.push(p);
+    for (const p of getVidcoreProviders()) VIDCORE_PROVIDERS.push(p);
   } catch {}
 }
 syncExportedProviderLists();
@@ -204,6 +221,7 @@ const vidnestCache = new Map();
 const meowtvCache = new Map();
 const byseCache = new Map();
 const cinejoyCache = new Map();
+const vidcoreCache = new Map();
 const subsCache = new Map();
 const vdrkSubsCache = new Map();
 
@@ -1041,6 +1059,164 @@ async function resolveCinejoy({ type, id, season, episode, server, meta }) {
   throw new Error(`No cinejoy source found${lastError ? ` (${lastError.message})` : ''}`);
 }
 
+// ---- vidcore ----
+// vidcore.io embeds TMDB-keyed HLS per server (Supreme/Prime/... — dynamic).
+// Flow (cracked from the site's own RSC payload + enc-dec.app samples):
+//   1. GET /{movie|tv}/{id}[/{s}/{e}]/ -> the Next.js flight payload carries
+//      an escaped bootstrap token (`\"en\":\"<token>\"`)
+//   2. GET enc-dec.app/api/enc-vidcore?text=<token>&stage=1 -> {stage1: url, token}
+//   3. POST stage1 url with X-CSRF-Token -> opaque text
+//   4. GET enc-vidcore?text=<that>&stage=2 -> {servers, stream, token}
+//   5. POST servers with X-CSRF-Token -> opaque text -> dec-vidcore
+//      -> [{name, description, data}]
+//   6. POST {stream}/{data} -> dec-vidcore -> {url (HLS master), tracks, ...}
+// The stream CDN (goldenkite) 403s unless UA + Referer + Origin are ALL sent,
+// so playback rides /play with the vidcore referer/origin.
+const VIDCORE_ENC = 'https://enc-dec.app/api/enc-vidcore';
+const VIDCORE_DEC = 'https://enc-dec.app/api/dec-vidcore';
+const VIDCORE_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+const VIDCORE_MAX_SERVERS = 4;
+// Their nginx WAF answers 403 to X-Requested-With — send plain browser headers only.
+
+async function fetchVidcoreProvider(type, id, season, episode, signal) {
+  const pagePath = type === 'tv' ? `/tv/${id}/${season || 1}/${episode || 1}/` : `/movie/${id}/`;
+  // 1. page -> bootstrap token (escaped JSON inside the RSC flight payload)
+  const page = await httpClient.get(`${vidcoreApi()}${pagePath}`, {
+    headers: { 'User-Agent': VIDCORE_UA, Referer: vidcoreReferer() },
+    timeout: PROBE_TIMEOUT_MS,
+    ...(signal ? { signal } : {}),
+  });
+  const tokenMatch = String(page.data || '').match(/\\"(?:en|token)\\":\\"(.*?)\\"/);
+  if (!tokenMatch) throw new Error('vidcore: no token in page');
+  // 2. stage1: token -> one-shot bootstrap URL + CSRF
+  const s1 = (
+    await httpClient.get(`${VIDCORE_ENC}?text=${encodeURIComponent(tokenMatch[1])}&stage=1`, {
+      timeout: PROBE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    })
+  ).data;
+  if (!s1 || s1.status !== 200 || !s1.result || !s1.result.stage1) throw new Error('vidcore: stage1 failed');
+  // 3. POST the bootstrap URL (CSRF'd) -> opaque text for stage2
+  const stage1Post = await httpClient.post(s1.result.stage1, null, {
+    headers: { 'User-Agent': VIDCORE_UA, Referer: vidcoreReferer(), 'X-CSRF-Token': s1.result.token },
+    timeout: PROBE_TIMEOUT_MS,
+    transformResponse: (d) => d,
+    ...(signal ? { signal } : {}),
+  });
+  // 4. stage2: text -> servers endpoint + stream base + CSRF for the next POSTs
+  const s2 = (
+    await httpClient.get(`${VIDCORE_ENC}?text=${encodeURIComponent(String(stage1Post.data))}&stage=2`, {
+      timeout: PROBE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    })
+  ).data;
+  if (!s2 || s2.status !== 200 || !s2.result || !s2.result.servers) throw new Error('vidcore: stage2 failed');
+  const { servers, stream, token } = s2.result;
+  // 5. servers list (CSRF'd POST) -> dec -> [{name, data}]
+  const serversPost = await httpClient.post(servers, null, {
+    headers: { 'User-Agent': VIDCORE_UA, Referer: vidcoreReferer(), 'X-CSRF-Token': token },
+    timeout: PROBE_TIMEOUT_MS,
+    transformResponse: (d) => d,
+    ...(signal ? { signal } : {}),
+  });
+  const dec1 = (
+    await httpClient.post(VIDCORE_DEC, { text: String(serversPost.data) }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: PROBE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    })
+  ).data;
+  if (!dec1 || dec1.status !== 200 || !Array.isArray(dec1.result)) throw new Error('vidcore: server list decode failed');
+  // 6. walk servers in order; first one holding the title yields the stream
+  let lastError = null;
+  for (const server of dec1.result.slice(0, VIDCORE_MAX_SERVERS)) {
+    try {
+      const streamPost = await httpClient.post(`${stream}/${server.data}`, null, {
+        headers: { 'User-Agent': VIDCORE_UA, Referer: vidcoreReferer(), 'X-CSRF-Token': token },
+        timeout: PROBE_TIMEOUT_MS,
+        transformResponse: (d) => d,
+        ...(signal ? { signal } : {}),
+      });
+      const dec2 = (
+        await httpClient.post(VIDCORE_DEC, { text: String(streamPost.data) }, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: PROBE_TIMEOUT_MS,
+          ...(signal ? { signal } : {}),
+        })
+      ).data;
+      if (!dec2 || dec2.status !== 200 || !dec2.result) throw new Error(`decoder ${dec2 && dec2.status}`);
+      if (!dec2.result.url) throw new Error('no url');
+      return { data: dec2.result, server };
+    } catch (err) {
+      if ((signal && signal.aborted) || (err && (err.code === 'ERR_CANCELED' || err.aborted))) {
+        const aborted = new Error('vidcore: aborted');
+        aborted.aborted = true;
+        throw aborted;
+      }
+      lastError = err;
+    }
+  }
+  throw new Error(`vidcore: no server held the title${lastError ? ` (${lastError.message})` : ''}`);
+}
+
+function vidcoreToResult(provider, data) {
+  if (!data || !data.url) return { provider: provider.name, sources: [], subtitles: [] };
+  const url = String(data.url);
+  const source = {
+    url,
+    quality: 'auto',
+    isM3U8: /\.m3u8($|\?)/i.test(url),
+    headers: null,
+    referer: vidcoreReferer(),
+    origin: vidcoreOrigin(),
+    lang: null,
+    dub: null,
+  };
+  const subs = (Array.isArray(data.tracks) ? data.tracks : [])
+    .map((t) => ({
+      url: t && (t.file || t.url || t.src),
+      label: (t && (t.label || t.language || t.lang)) || 'Unknown',
+      lang: (t && (t.language || t.lang || t.label)) || null,
+    }))
+    .filter((sub) => sub.url);
+  return { provider: provider.name, sources: [source], subtitles: subs };
+}
+
+async function resolveVidcore({ type, id, season, episode, server }) {
+  if (type !== 'movie' && type !== 'tv') throw new Error('type must be movie or tv');
+  const ALL_VIDCORE = getVidcoreProviders();
+  if (server) {
+    const provider = ALL_VIDCORE.find((candidate) => candidate.name === String(server).toLowerCase());
+    if (!provider) throw new Error(`Unknown vidcore server '${server}'`);
+    const payload = await fetchVidcoreProvider(type, id, season, episode);
+    return vidcoreToResult(provider, payload.data);
+  }
+  const key = titleKey(type, id, season, episode);
+  const cachedName = vidcoreCache.get(key);
+  const cachedProvider = cachedName && ALL_VIDCORE.find((candidate) => candidate.name === cachedName);
+  const order = (
+    cachedProvider ? [cachedProvider, ...ALL_VIDCORE.filter((p) => p.name !== cachedProvider.name)] : ALL_VIDCORE
+  ).filter((p) => !isDead('vidcore', p, key));
+  let lastError = null;
+  const settled = await Promise.allSettled(
+    order.map((p) => fetchVidcoreProvider(type, id, season, episode).then((payload) => vidcoreToResult(p, payload.data)))
+  );
+  for (let i = 0; i < order.length; i++) {
+    const provider = order[i];
+    const outcome = settled[i];
+    if (outcome.status === 'rejected') {
+      lastError = outcome.reason;
+      markDead('vidcore', provider, key);
+      continue;
+    }
+    if (!outcome.value.sources.length) continue;
+    vidcoreCache.set(key, provider.name);
+    return outcome.value;
+  }
+  throw new Error(`No vidcore source found${lastError ? ` (${lastError.message})` : ''}`);
+}
+
 // vidnest's subtitles come from a separate API (sub.vdrk.site) serving VTT
 // files per language on cache.vdrk.site (CORS-open, playable directly).
 async function fetchVidnestSubtitles(type, id, season, episode) {
@@ -1286,7 +1462,7 @@ async function verifyWinnerSegments(src, minDurationSec = 0) {
 // family breaker run as side effects on every probe, so bookkeeping stays
 // correct even for probes still in flight after a winner was taken: a late
 // failure counts toward tripping its family breaker, a late success heals it.
-async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = [], byseOrder = [], cinejoyOrder = []) {
+async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = [], byseOrder = [], cinejoyOrder = [], vidcoreOrder = []) {
   const candidates = [];
   // peachify first: exact-arrival ties resolve to it (registered sooner),
   // preserving brand preference wherever speed doesn't differ.
@@ -1295,14 +1471,15 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = []
   for (const provider of meowtvOrder) candidates.push(['meowtv', provider]);
   for (const provider of byseOrder) candidates.push(['byse', provider]);
   for (const provider of cinejoyOrder) candidates.push(['cinejoy', provider]);
+  for (const provider of vidcoreOrder) candidates.push(['vidcore', provider]);
 
   return await new Promise((resolve) => {
     let remaining = candidates.length;
     if (!remaining) return resolve({ won: false, lastErr: {} });
     let finished = false;
     const lastErrors = {};
-    const failCounts = { peachify: 0, vidnest: 0, meowtv: 0, byse: 0, cinejoy: 0 };
-    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length, meowtv: meowtvOrder.length, byse: byseOrder.length, cinejoy: cinejoyOrder.length };
+    const failCounts = { peachify: 0, vidnest: 0, meowtv: 0, byse: 0, cinejoy: 0, vidcore: 0 };
+    const familySizes = { peachify: peachifyOrder.length, vidnest: vidnestOrder.length, meowtv: meowtvOrder.length, byse: byseOrder.length, cinejoy: cinejoyOrder.length, vidcore: vidcoreOrder.length };
     // One abort gate per candidate: crowning a winner cancels every
     // still-flying upstream fetch (sockets released, upstreams spared).
     // Aborts are bookkeeping-neutral by contract — see the guards below.
@@ -1338,9 +1515,13 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = []
               ? Promise.resolve(opts.metaPromise)
                   .then((meta) => fetchCinejoyProvider(provider, opts.type, opts.id, opts.season, opts.episode, meta))
                   .then((result) => cinejoyToResult(provider, result))
-              : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
-                  vidnestToResult(provider, payload)
-                )
+              : family === 'vidcore'
+                ? fetchVidcoreProvider(opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
+                    vidcoreToResult(provider, payload.data)
+                  )
+                : fetchVidnestProvider(provider, opts.type, opts.id, opts.season, opts.episode, controller.signal).then((payload) =>
+                    vidnestToResult(provider, payload)
+                  )
       )
         .then((result) => {
           healFamily(family); // any HTTP answer means the family is alive
@@ -1418,7 +1599,9 @@ async function autoRace(peachifyOrder, vidnestOrder, key, opts, meowtvOrder = []
                         ? byseCache
                         : outcome.family === 'cinejoy'
                           ? cinejoyCache
-                          : vidnestCache
+                          : outcome.family === 'vidcore'
+                            ? vidcoreCache
+                            : vidnestCache
                   ).set(key, outcome.provider.name);
                   return finish({ won: true, result: outcome.result });
                 }
@@ -1466,6 +1649,9 @@ async function resolveStream({ type, id, season, episode, server, skip, minDurat
     const cinejoyProvider = getCinejoyProviders().find((candidate) => candidate.name === name || candidate.slug === name);
     if (cinejoyProvider) return resolveCinejoy({ type, id, season, episode, server: name });
 
+    const vidcoreProvider = getVidcoreProviders().find((candidate) => candidate.name === name);
+    if (vidcoreProvider) return resolveVidcore({ type, id, season, episode, server: name });
+
     const provider = ALL_PEACHIFY.find((candidate) => candidate.name === name || candidate.path === name);
     if (!provider) throw new Error(`Unknown provider '${server}'`);
     const data = await fetchProvider(provider, type, id, season, episode);
@@ -1512,6 +1698,13 @@ async function resolveStream({ type, id, season, episode, server, skip, minDurat
   ).filter((provider) => !skipSet.has(provider.name) && !familyDown('cinejoy') && !isDead('cinejoy', provider, key));
   const metaPromise = cinejoyOrder.length ? fetchTitleMeta(type, id) : Promise.resolve(null);
 
+  const ALL_VIDCORE = getVidcoreProviders();
+  const cachedVidcoreName = vidcoreCache.get(key);
+  const cachedVidcore = cachedVidcoreName && ALL_VIDCORE.find((provider) => provider.name === cachedVidcoreName);
+  const vidcoreOrder = (
+    cachedVidcore ? [cachedVidcore, ...ALL_VIDCORE.filter((provider) => provider.name !== cachedVidcore.name)] : ALL_VIDCORE
+  ).filter((provider) => !skipSet.has(provider.name) && !familyDown('vidcore') && !isDead('vidcore', provider, key));
+
   const outcome = await autoRace(
     peachifyOrder,
     vidnestOrder,
@@ -1519,7 +1712,8 @@ async function resolveStream({ type, id, season, episode, server, skip, minDurat
     { type, id, season, episode, minDurationPromise, imdbId, metaPromise },
     meowtvOrder,
     byseOrder,
-    cinejoyOrder
+    cinejoyOrder,
+    vidcoreOrder
   );
   if (outcome.won) return outcome.result;
 
@@ -1597,12 +1791,14 @@ module.exports = {
   fetchMeowtvSubtitles,
   resolveByse,
   resolveCinejoy,
+  resolveVidcore,
   byseSolvePow,
   PROVIDERS,
   VIDNEST_PROVIDERS,
   MEOWTV_PROVIDERS,
   BYSE_PROVIDERS,
   CINEJOY_PROVIDERS,
+  VIDCORE_PROVIDERS,
   PEACHIFY_KEY_HEX,
   PEACHIFY_API,
   VIDNEST_API,
@@ -1614,6 +1810,7 @@ module.exports = {
   getMeowtvProviders,
   getByseProviders,
   getCinejoyProviders,
+  getVidcoreProviders,
   refreshUpstreamConsts,
   loadUpstreams,
   // internals — exported for the test suite (tests/extractor.test.js)

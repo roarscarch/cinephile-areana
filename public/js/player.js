@@ -22,7 +22,13 @@ const Player = (() => {
 
   // Option A: video bytes ride the Cloudflare Worker, not Vercel.
   // Override with window.__PLAY_PROXY__ (e.g. in index.html) if the URL changes.
-  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ || 'https://cinephile-play.cinephilia-areana.workers.dev').replace(/\/$/, '');
+  // Local dev (localhost/private LAN) proxies through the app's own /play route
+  // so residential-IP-only CDNs (vidcore) work — the Worker's datacenter IPs 403.
+  const PLAY_PROXY_BASE = (window.__PLAY_PROXY__ ?? (
+    /^(localhost|127\.|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname)
+      ? ''
+      : 'https://cinephile-play.cinephilia-areana.workers.dev'
+  )).replace(/\/$/, '');
 
   // Subtitle cue sizes (applied as video classes, see style.css ::cue rules).
   const SUB_SIZES = ['S', 'M', 'L', 'XL'];
@@ -160,6 +166,8 @@ const Player = (() => {
       this.currentIndex = 0;
       this.server = null;
       this.ready = false;
+      this._codecFailed = false;
+      this._codecWatch = null;
       this._intro = null;
       this._introFired = false;
       this.resumePos = 0;
@@ -619,6 +627,29 @@ const Player = (() => {
       const url = playableUrl(src.url, src.referer, src.origin);
       this.hideLoading();
 
+      // HEVC/H.265 (often 10-bit REMUX MKVs from the direct families) decodes
+      // in NO browser without hardware support: the element plays the audio
+      // track with currentTime advancing but videoWidth stays 0 — a silent
+      // black screen with a running timeline. No `error` event fires, so watch
+      // for an audio-only attach and fail over like any other dead source.
+      this._codecWatch && clearTimeout(this._codecWatch);
+      const badCodec = () => {
+        if (attachId !== this._attachId) return false;
+        const v = this.video;
+        if (!v) return false;
+        if (v.videoWidth > 0) return false; // real frames — fine
+        if (v.readyState < 1) return false; // still loading — give it time
+        if (!(v.currentTime > 1)) return false; // paused/autoplay-blocked
+        this._codecFailed = true;
+        this._fallbackNext();
+        return true;
+      };
+      this.video.addEventListener('loadeddata', () => {
+        if (attachId === this._attachId && this.video.videoWidth > 0) this._codecFailed = false;
+        badCodec();
+      }, { once: true });
+      this._codecWatch = setTimeout(badCodec, 6000);
+
       // mid-playback re-attach (server switch, dead source, audio/quality
       // change): carry the current position over so the new stream resumes
       // here instead of restarting from 0. Skipped on the initial load — no
@@ -723,7 +754,11 @@ const Player = (() => {
         this._attach(this.sources[this.currentIndex]);
       } else if (this._manualServer) {
         // Manual pick exhausted its own sources: STAY, don't race away.
-        this.showError(`Couldn't play ${PROVIDER_LABELS[this.provider] || this.provider || 'this server'} — pick another server.`);
+        this.showError(
+          this._codecFailed
+            ? `${PROVIDER_LABELS[this.provider] || this.provider || 'This server'} is HEVC (H.265) — browsers can't decode it. Pick another server, or use ⋯ → ↓ 4K files.`
+            : `Couldn't play ${PROVIDER_LABELS[this.provider] || this.provider || 'this server'} — pick another server.`
+        );
       } else {
         this._autoAdvance(this.provider);
       }
