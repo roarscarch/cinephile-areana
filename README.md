@@ -4,7 +4,7 @@
 
 ## Watch Any Movie — Free, Forever.
 
-**Watch it live: [https://cinephilia-vercel.vercel.app](https://cinephilia-vercel.vercel.app) — Click here and let me know how it was!**
+**Watch it live: [https://cinephilia.in](https://cinephilia.in) — Click here and let me know how it was!**
 
 **Pure, uninterrupted cinema. No ads. No login. No interruptions. Just you and the movie.**
 
