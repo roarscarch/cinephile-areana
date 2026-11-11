@@ -397,6 +397,15 @@ button { font-family: inherit; }
   color: #cfc4ff;
 }
 .card-badge.tv { background: rgba(0, 212, 255, 0.24); color: #a5e9ff; }
+/* Franchise order badge ("#1") — gradient pill so the watch-order reads as
+   the primary info on collection cards. */
+.card-badge.order {
+  background: var(--grad);
+  color: #fff;
+  letter-spacing: 0.04em;
+}
+/* The film you're on, highlighted inside a franchise strip. */
+.card.current-in-franchise .poster-wrap { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: var(--radius-sm); }
 
 .card-hover {
   position: absolute;
@@ -448,6 +457,11 @@ button { font-family: inherit; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
   gap: 22px 16px;
+  /* Skip layout/paint for grid tiles far below the viewport — long browse
+     grids render several times faster, and below-fold posters (already
+     loading=lazy) only load when scrolled near. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 800px;
 }
 .grid .card { width: auto; }
 .load-more {
@@ -596,17 +610,36 @@ button { font-family: inherit; }
 /* episodes */
 .season-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .season-bar h3 { font-size: 1.05rem; font-weight: 700; }
-.season-select {
-  padding: 8px 14px;
+.season-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px;
+  min-width: 0;
+}
+.season-chips::-webkit-scrollbar { display: none; }
+.season-chip {
+  flex: 0 0 auto;
+  padding: 8px 16px;
   border-radius: 999px;
   border: 1px solid var(--line);
   background: var(--surface);
-  color: var(--text);
-  font-size: 0.86rem;
+  color: var(--muted);
+  font-size: 0.84rem;
   font-weight: 600;
   font-family: inherit;
   cursor: pointer;
   outline: none;
+  transition: border 0.2s, background 0.2s, color 0.2s;
+  white-space: nowrap;
+}
+.season-chip:hover { border-color: var(--accent); color: var(--text); }
+.season-chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 .episodes {
   display: grid;
@@ -687,7 +720,11 @@ button { font-family: inherit; }
   opacity: 0.5;
   pointer-events: none;
   z-index: 0;
+  transition: opacity 0.4s;
 }
+.ambient-glow[hidden] { opacity: 0; }
+/* Player control buttons reflecting an ON state (ambient toggle). */
+.active-ctl { color: var(--accent-2); border-color: rgba(0, 212, 255, 0.35); }
 
 /* Subtitle cue sizes (class set by player.setSubSize, persisted per user). */
 .player-shell video.cue-s::cue { font-size: 0.8em; }
@@ -1048,6 +1085,18 @@ button { font-family: inherit; }
   min-width: 200px;
 }
 .vol-pop input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+
+/* ============ Route transition (perceived smoothness) ============ */
+/* Opacity-only: no transform, so no containing-block surprises for fixed
+   elements. Toggled per navigation by router.paintRoute(); the very first
+   paint is never faded. */
+@media (prefers-reduced-motion: no-preference) {
+  #view.route-fade { animation: routeFade 0.22s ease-out; }
+  @keyframes routeFade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+}
 .vol-pop span { font-size: 0.8rem; font-weight: 700; color: var(--text); min-width: 46px; text-align: right; }
 /* overflow menu: same popup shell, stacked buttons */
 .more-pop { flex-direction: column; align-items: stretch; min-width: 0; }

@@ -7,7 +7,7 @@
 //  - API + /play: NEVER cached (auth'd tokens, range requests, live data)
 // Bump this name on every release that changes static assets — the activate
 // handler purges the old cache, so a stale SW cache can never outlive a deploy.
-const CACHE = 'cinephile-v56';
+const CACHE = 'cinephile-v58';
 // Versioned URLs to match what index.html actually requests (?v=20 for player) — precaching
 // the bare paths instead used to guarantee a MISS at runtime (the SW would
 // fetch /js/api.js?v=18 while holding /js/api.js), so the install downloaded
@@ -15,10 +15,12 @@ const CACHE = 'cinephile-v56';
 // /vendor/hls.min.js is deliberately NOT precached: ~400 KB that no browse/
 // search/home page needs — player.js lazy-loads it on the watch page, and that
 // fetch is cached here at runtime (static assets are cache-first).
-const SHELL = ['/', '/css/style.css?v=11', '/js/api.js?v=25', '/js/player.js?v=36', '/js/torrent.js?v=2', '/js/render.js?v=24', '/js/router.js?v=42', '/fonts/outfit-latin.woff2', '/manifest.webmanifest', '/icons/icon.svg'];
+const SHELL = ['/', '/css/style.css?v=13', '/js/api.js?v=26', '/js/player.js?v=37', '/js/torrent.js?v=2', '/js/render.js?v=25', '/js/router.js?v=44', '/fonts/outfit-latin.woff2', '/manifest.webmanifest', '/icons/icon.svg'];
 
 // everything the app fetches from our own API — network only.
-const NETWORK_ONLY = /^\/(?:play|downloads?|sources|servers|subtitles|dubs|search|info|sign|recent|trending|movies|tv|genre|top-imdb|health|movie\/embed|tv\/embed)(?:\/|\?|$)/;
+// (anime/* and collection/* are API data too — cache-first here would serve
+// expired stream tokens / stale catalog rows forever.)
+const NETWORK_ONLY = /^\/(?:play|downloads?|sources|servers|subtitles|dubs|search|info|sign|recent|trending|movies|tv|genre|top-imdb|anime|collection|health|movie\/embed|tv\/embed)(?:\/|\?|$)/;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

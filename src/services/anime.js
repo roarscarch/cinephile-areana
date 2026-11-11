@@ -108,6 +108,70 @@ function searchMedia(term, page, perPage) {
   });
 }
 
+// ---- season chain ----
+// Anime "seasons" are separate MAL/AniList entries linked by PREQUEL/SEQUEL
+// relations. Walk the relation graph (BFS, depth/width capped) and collect the
+// TV/ONA entries so the client can render a Season 1..N selector that jumps
+// between entries. Movies/OVAs/specials are excluded from the chain.
+const SEASON_RELATION_FIELDS = `
+  id idMal title { romaji english native } coverImage { extraLarge large }
+  episodes startDate { year } format
+`;
+const SEASON_FORMATS = new Set(['TV', 'ONA']);
+const SEASON_CHAIN_MAX = 15;
+
+function fetchRelationMedia(anilistId) {
+  const key = `rel:${anilistId}`;
+  return memo(key, 30 * 60 * 1000, async () => {
+    const query = `query($id:Int){ Media(id:$id, type:ANIME){
+      ${SEASON_RELATION_FIELDS}
+      relations { edges { relationType node { ${SEASON_RELATION_FIELDS} } } }
+    } }`;
+    const data = await anilist(query, { id: Number(anilistId) });
+    return (data && data.Media) || null;
+  });
+}
+
+async function seasonChain(startMedia) {
+  const visited = new Set([startMedia.id]);
+  const nodes = new Map([[startMedia.id, startMedia]]);
+  const queue = [startMedia];
+  // Each hop is one memoized AniList call; the caps keep the walk bounded
+  // even for 30-season franchises (and guard against relation loops).
+  while (queue.length && visited.size < SEASON_CHAIN_MAX) {
+    const current = queue.shift();
+    const media = await fetchRelationMedia(current.id);
+    if (!media) continue;
+    const edges = ((media.relations && media.relations.edges) || []).filter(
+      (e) =>
+        e && e.node && SEASON_FORMATS.has(e.node.format) &&
+        (e.relationType === 'PREQUEL' || e.relationType === 'SEQUEL')
+    );
+    for (const edge of edges) {
+      if (visited.has(edge.node.id)) continue;
+      visited.add(edge.node.id);
+      nodes.set(edge.node.id, edge.node);
+      queue.push(edge.node);
+      if (visited.size >= SEASON_CHAIN_MAX) break;
+    }
+  }
+  return [...nodes.values()]
+    .sort(
+      (a, b) =>
+        ((a.startDate && a.startDate.year) || 9999) - ((b.startDate && b.startDate.year) || 9999) ||
+        a.id - b.id
+    )
+    .slice(0, SEASON_CHAIN_MAX)
+    .map((m) => ({
+      id: m.idMal || m.id,
+      anilistId: m.id,
+      title: (m.title && (m.title.english || m.title.romaji || m.title.native)) || 'Untitled',
+      episodes: m.episodes || null,
+      year: (m.startDate && m.startDate.year) || null,
+      image: m.coverImage && (m.coverImage.extraLarge || m.coverImage.large),
+    }));
+}
+
 function info(id) {
   return memo(`info:${id}`, 10 * 60 * 1000, async () => {
     // Look up by MAL id first (the canonical id); fall back to AniList id for
@@ -128,6 +192,12 @@ function info(id) {
       .map((node) => normalizeMedia(node && node.mediaRecommendation))
       .filter(Boolean);
     out.recommendations = recs;
+    // Franchise seasons (prequel/sequel chain) for the season selector.
+    try {
+      out.seasons = await seasonChain(media);
+    } catch (e) {
+      out.seasons = null;
+    }
     return out;
   });
 }

@@ -147,6 +147,8 @@ const API = (() => {
     genre: (genre, page = 1) => get(`/genre/${encodeURIComponent(genre)}?page=${page}`),
     topImdb: (type = 'all', page = 1) => get(`/top-imdb?type=${type}&page=${page}`),
     imdb75: (page = 1) => get(`/top-imdb?type=movie&page=${page}&minVote=7.5`),
+    // Franchise collection (movies) — all parts in release-date order.
+    collection: (id) => get(`/collection/${encodeURIComponent(id)}`),
     // Anime section — separate catalog (AniList ids + MAL-keyed streams),
     // never mixed with the TMDB movie/TV routes above.
     anime: {

@@ -87,6 +87,26 @@ module.exports = function mediaRoutes(tmdb) {
     }
   });
 
+  // Franchise collection: all parts of a TMDB collection, release-date order.
+  // Used by the /collection/<id> "watch the saga in order" page and the
+  // franchise strip on movie detail pages.
+  router.get('/collection/:id', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (!id) return res.status(400).json({ error: 'Valid collection id required' });
+      const data = await tmdb.fetchCollection(id);
+      if (!data || !data.parts.length) return res.status(404).json({ error: 'Collection not found' });
+      res.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
+      res.json(data);
+    } catch (error) {
+      if (error.message.includes('404')) {
+        res.status(404).json({ error: 'Collection not found' });
+      } else {
+        res.status(500).json({ error: error.message });
+      }
+    }
+  });
+
   // Episode sources endpoint with validation
   router.get('/sources/:episodeId', async (req, res) => {
     try {

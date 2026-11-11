@@ -147,5 +147,5 @@
       ${row(rows && rows.topRated, 'Top Rated', '/top-rated')}`;
   }
 
-  return { TYPE_LABEL, esc, escapeHtml: esc, card, animeCard, grid, skeletonRow, rowWithArrows, homeView };
+  return { TYPE_LABEL, esc, escapeHtml: esc, posterImg, card, animeCard, grid, skeletonRow, rowWithArrows, homeView };
 });

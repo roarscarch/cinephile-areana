@@ -197,7 +197,44 @@ export class CinephileHQ {
       } else {
         info.episodes = [{ id, title, number: 1, season: 1 }];
       }
+      // Franchise/collection membership (movies): powers the "Part of the
+      // <franchise>" strip + the /collection/<id> in-order page.
+      info.collection =
+        data.belongs_to_collection && data.belongs_to_collection.id
+          ? { id: String(data.belongs_to_collection.id), name: data.belongs_to_collection.name }
+          : null;
       return info;
+    });
+  }
+
+  /**
+   * Franchise collection (movies): every part ordered by release date, for
+   * the "watch the saga in order" page. TMDB's /collection endpoint returns
+   * all parts in one request — no per-part round-trips needed. (Node twin:
+   * src/services/tmdb.js fetchCollection.)
+   */
+  async fetchCollection(collectionId) {
+    return this._cached(`collection:${collectionId}`, 15 * 60 * 1000, async () => {
+      const data = await this.tmdbGet(`/collection/${parseInt(collectionId, 10)}`);
+      const parts = (data.parts || [])
+        .filter((p) => p.release_date) // parts without dates (unreleased announcements) drop out
+        .sort((a, b) => String(a.release_date).localeCompare(String(b.release_date)))
+        .map((p) => ({
+          id: `movie/${p.id}`,
+          title: p.title || p.original_title,
+          image: this._img(p.poster_path),
+          cover: this._img(p.backdrop_path),
+          releaseDate: p.release_date,
+          rating: p.vote_average || 0,
+          description: p.overview || '',
+        }));
+      return {
+        id: String(parseInt(collectionId, 10)),
+        name: data.name || 'Collection',
+        description: data.overview || '',
+        image: this._img(data.poster_path || data.backdrop_path),
+        parts,
+      };
     });
   }
 

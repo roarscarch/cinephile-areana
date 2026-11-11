@@ -400,28 +400,17 @@ const Player = (() => {
     /**
      * Ambient glow: every 800 ms paint the current frame (32×18, cheap)
      * onto a blurred canvas behind the player. Skipped while paused,
-     * hidden, or before any frame exists. Display-only — pixels are never
-     * read, so cross-origin streams are safe.
+     * hidden, off, or before any frame exists. Display-only — pixels are
+     * never read, so cross-origin streams are safe.
      */
     _initAmbient() {
-      if (this._ambientTimer) return;
-      let canvas = this.shell.querySelector('.ambient-glow');
-      if (!canvas) {
-        canvas = document.createElement('canvas');
-        canvas.className = 'ambient-glow';
-        canvas.width = 32;
-        canvas.height = 18;
-        canvas.setAttribute('aria-hidden', 'true');
-        this.shell.prepend(canvas);
-      }
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      this._ambientTimer = setInterval(() => {
-        try {
-          if (this.video.paused || document.hidden || this.video.readyState < 2) return;
-          if (this.video.videoWidth) ctx.drawImage(this.video, 0, 0, 32, 18);
-        } catch {}
-      }, 800);
+      if (!this._ambientCtl) this._ambientCtl = AmbientGlow.attach(this.shell, this.video);
+      return this._ambientCtl;
+    }
+
+    /** Public accessor for the router's toggle button (creates on demand). */
+    ambient() {
+      return this._initAmbient();
     }
 
     load({ mediaId, episodeId = '1-1', title, server = null, image = '', imdbId = null }) {
@@ -1262,5 +1251,65 @@ const Player = (() => {
     }
   }
 
-  return { MoviePlayer, PROVIDER_LABELS, SERVER_ORDER };
+  // ---- AmbientGlow (shared by MoviePlayer + the anime watch page) ----
+  // Blurred live frame mirror behind the player shell. Canvas pixels are
+  // never READ (no getImageData), so cross-origin video can't taint anything.
+  const AMBIENT_KEY = 'cinephile-ambient';
+  function ambientEnabled() {
+    try {
+      return localStorage.getItem(AMBIENT_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  }
+  const AmbientGlow = {
+    /**
+     * Attach a glow canvas to a `.player-shell`. Idempotent per shell.
+     * Returns { enabled, setEnabled(on) } — the flag is persisted app-wide
+     * (one preference for both player types). The sampling interval
+     * self-destroys when the shell leaves the DOM (navigation).
+     */
+    attach(shell, video) {
+      if (!shell || !video) return { enabled: ambientEnabled(), setEnabled() {} };
+      if (shell._ambientCtl) return shell._ambientCtl;
+      const canvas = document.createElement('canvas');
+      canvas.className = 'ambient-glow';
+      canvas.width = 32;
+      canvas.height = 18;
+      canvas.setAttribute('aria-hidden', 'true');
+      const ctx = canvas.getContext('2d');
+      const state = { enabled: ambientEnabled(), timer: null };
+      canvas.hidden = !state.enabled;
+      shell.prepend(canvas);
+      if (ctx) {
+        state.timer = setInterval(() => {
+          try {
+            if (!canvas.isConnected) {
+              // navigation replaced the player shell — stop the loop
+              clearInterval(state.timer);
+              return;
+            }
+            if (!state.enabled || video.paused || document.hidden || video.readyState < 2) return;
+            if (video.videoWidth) ctx.drawImage(video, 0, 0, 32, 18);
+          } catch {}
+        }, 800);
+      }
+      const ctl = {
+        get enabled() {
+          return state.enabled;
+        },
+        setEnabled(on) {
+          state.enabled = !!on;
+          canvas.hidden = !state.enabled;
+          try {
+            localStorage.setItem(AMBIENT_KEY, state.enabled ? '1' : '0');
+          } catch {}
+        },
+      };
+      shell._ambientCtl = ctl;
+      return ctl;
+    },
+  };
+
+  return { MoviePlayer, PROVIDER_LABELS, SERVER_ORDER, AmbientGlow };
 })();

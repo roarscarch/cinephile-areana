@@ -200,6 +200,13 @@ export async function onRequest({ request, env, params, next, waitUntil }) {
       return cachedJson(request, ctx, 3600, async () => info);
     }
 
+    // ---- collection (franchise parts in release-date order) ----
+    if (a === 'collection' && seg.length === 2 && /^\d+$/.test(b)) {
+      const data = await api.fetchCollection(b);
+      if (!data || !data.parts.length) return err('Collection not found', 404);
+      return cachedJson(request, ctx, 3600, async () => data);
+    }
+
     // ---- sources ----
     if (a === 'sources' && seg.length === 2) {
       const mediaId = q.get('mediaId');

@@ -34,7 +34,7 @@
   }
   // Markup helpers live in render.js — shared with the server's SSR pass so
   // pre-rendered HTML and client-rendered HTML can never drift apart.
-  const { card, animeCard, grid, skeletonRow, rowWithArrows, escapeHtml, homeView, TYPE_LABEL } = Render;
+  const { card, animeCard, grid, skeletonRow, rowWithArrows, escapeHtml, homeView, TYPE_LABEL, posterImg } = Render;
 
   // ---------------- helpers ----------------
   function el(html) {
@@ -312,7 +312,32 @@
     return parsed ? `S${parsed[1]} · E${parsed[2]}` : String(ep || '');
   }
 
-  const prefetched = new Set();
+  // Session-scoped prefetch map: route href → in-flight fetch promise.
+  // NOTHING is stored or persisted — this is pure request-ahead. A hover
+  // (desktop) or touch (mobile) starts the request early; when the click
+  // actually happens the view awaits the SAME promise instead of paying
+  // another network round-trip. Failures self-remove so a retry works.
+  const prefetchMap = new Map();
+
+  function startPrefetch(href, loader) {
+    if (!href || prefetchMap.has(href)) return prefetchMap.get(href);
+    const promise = Promise.resolve(loader()).catch(() => {
+      prefetchMap.delete(href);
+      throw new Error('prefetch failed: ' + href);
+    });
+    promise.catch(() => {}); // never surface "unhandled" when nobody consumes it
+    prefetchMap.set(href, promise);
+    // Tiny session cap — prefetched-but-never-clicked entries evict oldest-first.
+    if (prefetchMap.size > 24) prefetchMap.delete(prefetchMap.keys().next().value);
+    return promise;
+  }
+
+  function takePrefetch(href) {
+    const promise = prefetchMap.get(href);
+    if (promise) prefetchMap.delete(href);
+    return promise || null;
+  }
+
   // ONLY /info is prefetched on hover. Pulling /sources here too used to launch
   // the extractor's full auto-race (every provider across both families, up to
   // an 8s probe window per title) for any card the cursor merely crossed, and
@@ -320,10 +345,10 @@
   // playback start gets SLOWER. /info is one cached TMDB lookup; it's all the
   // "instant detail page" benefit we want.
   function prefetchMedia(href) {
-    if (!href || prefetched.has(href)) return;
-    prefetched.add(href);
+    if (!href || prefetchMap.has(href)) return;
     const routeMatch = href.match(/^\/(movie|tv)\/(\d+)/);
-    if (routeMatch) API.info(`${routeMatch[1]}/${routeMatch[2]}`).catch(() => {});
+    if (routeMatch) startPrefetch(href, () => API.info(`${routeMatch[1]}/${routeMatch[2]}`));
+    else if (/^\/anime\/[\w-]+/.test(href)) startPrefetch(href, () => API.anime.info(href.split('/')[2]));
   }
 
   function bindCards(scope) {
@@ -332,6 +357,27 @@
       cardEl.addEventListener('mouseenter', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
       cardEl.addEventListener('touchstart', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
     });
+  }
+
+  // While the browser is idle on the home page, quietly request page 1 of each
+  // nav destination (Movies / TV / Top Rated / IMDb 7.5+ / Anime rows) so the
+  // first tap on a nav link paints instantly. Skipped on save-data / very slow
+  // connections — this is a convenience, not a necessity.
+  function idlePrefetchNavRoutes() {
+    try {
+      const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (conn && (conn.saveData || /(^|\b)2g\b/i.test(conn.effectiveType || ''))) return;
+    } catch (e) {}
+    const routes = [
+      ['/movies', () => API.browse('movies')],
+      ['/tv-shows', () => API.browse('tv')],
+      ['/top-rated', () => API.topImdb('all')],
+      ['/imdb75', () => API.imdb75()],
+      ['/anime', () => API.anime.trending()],
+    ];
+    const run = () => routes.forEach(([href, loader]) => startPrefetch(href, loader));
+    if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 4000 });
+    else setTimeout(run, 1200);
   }
 
   function bindRowArrows(scope) {
@@ -384,12 +430,16 @@
           `<div class="sd-item" data-href="/search?q=${encodeURIComponent(query)}">
               <div class="sd-info"><div class="sd-title" style="color:var(--accent)">See all results for “${escapeHtml(query)}”</div></div>
             </div>`;
-        searchDropdown.querySelectorAll('.sd-item').forEach((cardEl) =>
+        searchDropdown.querySelectorAll('.sd-item').forEach((cardEl) => {
           cardEl.addEventListener('click', () => {
             navigate(cardEl.dataset.href);
             closeSearch();
-          })
-        );
+          });
+          // hovering a suggestion warms its detail page — the tap then opens
+          // instantly (same promise, no extra request)
+          cardEl.addEventListener('mouseenter', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
+          cardEl.addEventListener('touchstart', () => prefetchMedia(cardEl.dataset.href), { passive: true, once: true });
+        });
       } catch (error) {
         if (!aborter.signal.aborted) searchDropdown.classList.remove('open');
       }
@@ -522,9 +572,11 @@
     // Anime row: its own catalog (AniList/Megaplay), so it is NOT part of the
     // TMDB data-row hydration below. Fetched independently and rendered with
     // animeCard when it lands. Runs for both SSR and client-render paths.
+    // The fetch doubles as the '/anime' route prefetch — the promise lives in
+    // prefetchMap until the Anime page consumes it.
     const hydrateAnimeHomeRow = () => {
-      API.anime
-        .trending()
+      startPrefetch('/anime', () => API.anime.trending());
+      startPrefetch('/anime')
         .then((items) => {
           if (!view.isConnected || !document.contains(view)) return;
           const section = view.querySelector('.section[data-anime-row]');
@@ -551,6 +603,7 @@
       hydrateHomeRow(view, '/top-imdb?type=movie&minVote=7.5', 2);
       hydrateHomeRow(view, '/recent/movies', 3);
       hydrateHomeRow(view, '/top-imdb?type=all', 4);
+      idlePrefetchNavRoutes();
       return;
     }
 
@@ -571,6 +624,7 @@
     // all five rows fetch in parallel; one failure degrades to an empty row
     // instead of stalling the rest
     sections.forEach(([endpoint], index) => hydrateHomeRow(view, endpoint, index));
+    idlePrefetchNavRoutes();
   };
 
   // ---- browse ----
@@ -601,6 +655,14 @@
     let page = 1;
     let hasNext = true;
 
+    // First page may have been prefetched on idle from the home page —
+    // consume it (one-shot) so the grid paints with zero network wait.
+    const routeHref =
+      kind === 'movies' ? '/movies' :
+      kind === 'tv-shows' ? '/tv-shows' :
+      kind === 'top-rated' ? '/top-rated' :
+      kind === 'imdb75' ? '/imdb75' : null;
+
     async function loadPage() {
       loadBtn.disabled = true;
       loadBtn.textContent = 'Loading…';
@@ -608,13 +670,15 @@
         // (The old __INITIAL__ inline-data fast path was removed: the server
         // no longer bloats every '/' payload with a second page of posters for
         // a view the user may never open — a direct fetch here is fast.)
-        const data = kind === 'genre'
-          ? await API.genre(genre, page)
-          : kind === 'top-rated'
-            ? await API.topImdb('all', page)
-            : kind === 'imdb75'
-              ? await API.imdb75(page)
-              : await API.browse(kind === 'tv-shows' ? 'tv' : 'movies', page);
+        const fetchPage = () =>
+          kind === 'genre'
+            ? API.genre(genre, page)
+            : kind === 'top-rated'
+              ? API.topImdb('all', page)
+              : kind === 'imdb75'
+                ? API.imdb75(page)
+                : API.browse(kind === 'tv-shows' ? 'tv' : 'movies', page);
+        const data = page === 1 && routeHref ? await (takePrefetch(routeHref) || fetchPage()) : await fetchPage();
         const items = data.results || [];
         hasNext = !!data.hasNextPage;
         if (page === 1) gridEl.innerHTML = ''; // drop the skeleton placeholders
@@ -811,7 +875,9 @@
     }
 
     const loaders = [
-      ['trending', () => API.anime.trending()],
+      // trending may already be in-flight from the home page's anime row —
+      // reuse that request instead of starting a second one
+      ['trending', () => takePrefetch('/anime') || API.anime.trending()],
       ['popular', () => API.anime.popular()],
       ['top', () => API.anime.top()],
     ];
@@ -824,6 +890,67 @@
         }
       })
     );
+  };
+
+  // ---- franchise collections ----
+  // Numbered card: "#1" order badge instead of the type label — franchises are
+  // about watch order, so the badge IS the content.
+  function franchiseCard(part, index) {
+    return `
+      <div class="card" data-href="/${part.id}">
+        <div class="poster-wrap">
+          <span class="card-badge order">#${index + 1}</span>
+          ${posterImg(part.image, part.title)}
+          ${part.rating ? `<span class="card-rating">★ ${Number(part.rating).toFixed(1)}</span>` : ''}
+          <div class="card-hover">
+            <div class="ch-title">${escapeHtml(part.title)}</div>
+            <div class="ch-meta">${part.releaseDate ? escapeHtml(part.releaseDate.slice(0, 4)) : ''}</div>
+            <span class="ch-play">Watch now</span>
+          </div>
+        </div>
+        <div class="card-title">${escapeHtml(part.title)}</div>
+        <div class="card-year">${part.releaseDate ? escapeHtml(part.releaseDate.slice(0, 4)) : ''}</div>
+      </div>`;
+  }
+
+  // Shared by the detail-page strip: fills the row with the collection's
+  // parts in release-date order (row arrows are bound by the caller).
+  function fillFranchiseRow(rowEl, data) {
+    rowEl.innerHTML = data.parts.map(franchiseCard).join('');
+    bindCards(rowEl);
+  }
+
+  views.collection = async (params) => {
+    const id = params.id;
+    scrollTop();
+    setActiveNav(null);
+    view.innerHTML = `
+      <div class="page-head">
+        <h1><span class="skel" style="display:inline-block;height:30px;width:280px;max-width:70%"></span></h1>
+        <p>Franchise — watch the saga in order</p>
+      </div>
+      <div class="section">
+        <div class="grid">${'<div class="skel" style="aspect-ratio:2/3"></div>'.repeat(12)}</div>
+      </div>`;
+
+    let data;
+    try {
+      data = await API.collection(id);
+    } catch (e) {
+      view.innerHTML = `<div class="empty"><div class="big">🎞️</div><h3>Couldn't load this collection</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/">Back home</a></div>`;
+      return;
+    }
+    if (!view.isConnected) return;
+
+    view.innerHTML = `
+      <div class="page-head">
+        <h1>${escapeHtml(data.name)}</h1>
+        <p>${escapeHtml(stripTags(data.description) || 'Watch the franchise in release order.')}</p>
+      </div>
+      <div class="section">
+        <div class="grid">${data.parts.map(franchiseCard).join('')}</div>
+      </div>`;
+    bindCards(view);
   };
 
   views.animeDetail = async (params) => {
@@ -842,21 +969,28 @@
         </div>
       </div>`;
 
+    const prefetchedInfo = takePrefetch(`/anime/${id}`);
     let info;
     try {
-      info = await API.anime.info(id);
+      info = await (prefetchedInfo || API.anime.info(id));
     } catch (e) {
-      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this anime</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/anime">Back to anime</a></div>`;
-      return;
+      try {
+        info = await API.anime.info(id);
+      } catch (e2) {
+        view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this anime</h3><p>${escapeHtml(e2.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/anime">Back to anime</a></div>`;
+        return;
+      }
     }
 
     const episodes = info.episodes || 0;
     const recs = info.recommendations || [];
+    const seasons = info.seasons || [];
+    const showSeasons = seasons.length > 1;
     view.innerHTML = `
       <div class="detail-hero">
         <div class="detail-bg" style="background-image:url(${(info.banner || info.image || '').replace(/"/g, '')})"></div>
         <div class="detail-main">
-          <div class="detail-poster">${info.image ? `<img src="${info.image}" alt="${escapeHtml(info.title)}"/>` : ''}</div>
+          <div class="detail-poster">${info.image ? `<img src="${info.image}" alt="${escapeHtml(info.title)}" fetchpriority="high"/>` : ''}</div>
           <div class="detail-info">
             <h1>${escapeHtml(info.title)}</h1>
             <div class="detail-meta">
@@ -877,7 +1011,18 @@
       </div>
       ${episodes ? `
         <div class="section">
-          <div class="season-bar"><h3>Episodes</h3></div>
+          <div class="season-bar">
+            <h3>Episodes</h3>
+            ${showSeasons ? `
+            <div class="season-chips" id="animeSeasonChips">
+              ${seasons
+                .map(
+                  (s, i) => `
+                <button class="season-chip${String(s.id) === String(info.id) ? ' active' : ''}" data-href="/anime/${s.id}" title="${escapeHtml(s.title)}">Season ${i + 1}</button>`
+                )
+                .join('')}
+            </div>` : ''}
+          </div>
           <div class="episodes" id="animeEpisodes"></div>
         </div>` : ''}
       ${recs.length ? `
@@ -888,6 +1033,10 @@
 
     bindRowArrows(view);
     bindCards(view);
+
+    view.querySelectorAll('#animeSeasonChips .season-chip').forEach((chipEl) =>
+      chipEl.addEventListener('click', () => navigate(chipEl.dataset.href))
+    );
 
     view.querySelector('#animePlay').addEventListener('click', () => {
       navigate(`/anime-watch/${id}/1`);
@@ -944,6 +1093,7 @@
           <button class="subs-select ctl-btn" id="animeAudio">Audio: ${dub ? 'Dub' : 'Sub'}</button>
           ${totalEpisodes ? `<select class="subs-select" id="animeEpSelect">${Array.from({ length: Math.min(totalEpisodes, 300) }, (_, i) => `<option value="${i + 1}" ${i + 1 === ep ? 'selected' : ''}>Episode ${i + 1}</option>`).join('')}</select>` : ''}
           <select class="subs-select" id="animeSubsSelect"><option value="">Subtitles: Off</option></select>
+          <button class="subs-select ctl-btn" id="animeAmbient" title="Ambient glow behind the player">✨ Ambient</button>
         </div>
       </div>`;
 
@@ -1019,6 +1169,20 @@
     }
 
     audioBtn.addEventListener('click', () => load(!dub));
+    // Ambient glow (same shared canvas mirror the TV/movie player uses)
+    const ambientBtn = view.querySelector('#animeAmbient');
+    if (ambientBtn && Player.AmbientGlow) {
+      const ambientCtl = Player.AmbientGlow.attach(shell, video);
+      const paintAmbient = () => {
+        ambientBtn.textContent = `✨ Ambient: ${ambientCtl.enabled ? 'On' : 'Off'}`;
+        ambientBtn.classList.toggle('active-ctl', ambientCtl.enabled);
+      };
+      paintAmbient();
+      ambientBtn.addEventListener('click', () => {
+        ambientCtl.setEnabled(!ambientCtl.enabled);
+        paintAmbient();
+      });
+    }
     if (nextBtn) nextBtn.addEventListener('click', () => navigate(`/anime-watch/${id}/${ep + 1}`));
     if (epSelect) epSelect.addEventListener('change', () => navigate(`/anime-watch/${id}/${epSelect.value}`));
 
@@ -1054,12 +1218,20 @@
     API.sources(mediaId).catch(() => {});
     API.subtitles(mediaId).catch(() => {});
 
+    // If a hover/touch prefetched this page, reuse that exact request — the
+    // detail data arrives with ZERO additional network wait. A failed prefetch
+    // (removed from the map) falls back to a fresh call.
+    const prefetchedInfo = takePrefetch(`/${mediaId}`);
     let info;
     try {
-      info = await API.info(mediaId);
+      info = await (prefetchedInfo || API.info(mediaId));
     } catch (e) {
-      view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this title</h3><p>${escapeHtml(e.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/">Back home</a></div>`;
-      return;
+      try {
+        info = await API.info(mediaId);
+      } catch (e2) {
+        view.innerHTML = `<div class="empty"><div class="big">😕</div><h3>Couldn't load this title</h3><p>${escapeHtml(e2.message)}</p><a class="chip" style="display:inline-block;margin-top:16px" href="/">Back home</a></div>`;
+        return;
+      }
     }
 
     const hero = view.querySelector('.detail-bg');
@@ -1071,7 +1243,7 @@
       <div class="detail-hero">
         <div class="detail-bg" style="background-image:url(${hiRes(info.cover) || ''})"></div>
         <div class="detail-main">
-          <div class="detail-poster">${info.image ? `<img src="${info.image}" alt="${escapeHtml(info.title)}"/>` : ''}</div>
+          <div class="detail-poster">${info.image ? `<img src="${info.image}" alt="${escapeHtml(info.title)}" fetchpriority="high"/>` : ''}</div>
           <div class="detail-info">
             <h1>${escapeHtml(info.title)}</h1>
             <div class="detail-meta">
@@ -1095,7 +1267,7 @@
         ${type === 'tv' ? `
           <div class="season-bar">
             <h3>Episodes</h3>
-            <select class="season-select" id="seasonSelect"></select>
+            <div class="season-chips" id="seasonChips"></div>
           </div>
           <div class="episodes" id="episodes"></div>
         ` : ''}
@@ -1181,18 +1353,26 @@
       }
     });
 
-    // episodes
-    if (type === 'tv' && episodes.length) {
-      const seasons = [...new Set(episodes.map((episode) => episode.season))].sort((a, b) => a - b);
-      const select = view.querySelector('#seasonSelect');
-      select.innerHTML = seasons.map((season) => `<option value="${season}">Season ${season}</option>`).join('');
+    // episodes — season chips (touch-friendly on mobile) switch the grid
+    if (type === 'tv') {
+      const chips = view.querySelector('#seasonChips');
       const epGrid = view.querySelector('#episodes');
+      if (episodes.length) {
+        const seasons = [...new Set(episodes.map((episode) => episode.season))].sort((a, b) => a - b);
+        chips.innerHTML = seasons
+          .map((season) => `<button class="season-chip" data-season="${season}">Season ${season}</button>`)
+          .join('');
+        const paintActive = (season) =>
+          chips.querySelectorAll('.season-chip').forEach((chipEl) =>
+            chipEl.classList.toggle('active', Number(chipEl.dataset.season) === season)
+          );
 
-      function renderSeason(season) {
-        epGrid.innerHTML = episodes
-          .filter((episode) => episode.season === season)
-          .map(
-            (episode) => `
+        function renderSeason(season) {
+          paintActive(season);
+          epGrid.innerHTML = episodes
+            .filter((episode) => episode.season === season)
+            .map(
+              (episode) => `
             <div class="episode" data-href="/watch/tv/${id}/${episode.id}">
               <div class="ep-thumb" style="background:linear-gradient(135deg,var(--surface-2),var(--surface))"></div>
               <div class="ep-body">
@@ -1200,14 +1380,51 @@
                 <div class="ep-num">S${episode.season} · E${episode.number}</div>
               </div>
             </div>`
-          )
-          .join('');
-        epGrid.querySelectorAll('.episode').forEach((episodeEl) =>
-          episodeEl.addEventListener('click', () => navigate(episodeEl.dataset.href))
+            )
+            .join('');
+          epGrid.querySelectorAll('.episode').forEach((episodeEl) =>
+            episodeEl.addEventListener('click', () => navigate(episodeEl.dataset.href))
+          );
+        }
+        chips.querySelectorAll('.season-chip').forEach((chipEl) =>
+          chipEl.addEventListener('click', () => renderSeason(Number(chipEl.dataset.season)))
         );
+        renderSeason(seasons[0]);
+      } else {
+        chips.hidden = true;
+        epGrid.innerHTML = `
+          <div class="empty" style="grid-column:1/-1">
+            <div class="big">📺</div>
+            <h3>Episodes couldn't be loaded</h3>
+            <button class="chip" id="epRetry" style="margin-top:12px">Retry</button>
+          </div>`;
+        view.querySelector('#epRetry').addEventListener('click', () => location.reload());
       }
-      select.addEventListener('change', () => renderSeason(parseInt(select.value)));
-      renderSeason(seasons[0]);
+    }
+
+    // Franchise strip (movies): "Part of the <franchise>" row with the whole
+    // collection in release order. Loaded async — never blocks the page.
+    if (type === 'movie' && info.collection && info.collection.id) {
+      const stripSection = document.createElement('div');
+      stripSection.className = 'section';
+      stripSection.innerHTML = `
+        <div class="section-head"><h2>${escapeHtml(info.collection.name)}</h2><a class="see-all" href="/collection/${encodeURIComponent(info.collection.id)}">View collection</a></div>
+        ${rowWithArrows(skeletonRow(8))}`;
+      // insert before the recommendations section so the franchise row reads first
+      const recsSection = view.querySelector('.section:last-of-type');
+      view.insertBefore(stripSection, recsSection);
+      bindRowArrows(stripSection);
+      try {
+        const collection = await API.collection(info.collection.id);
+        if (!view.isConnected || !stripSection.isConnected) return;
+        fillFranchiseRow(stripSection.querySelector('.row'), collection);
+        // keep the "current" film visually anchored in the strip
+        stripSection.querySelectorAll('.card').forEach((cardEl) => {
+          if (cardEl.dataset.href === `/${mediaId}`) cardEl.classList.add('current-in-franchise');
+        });
+      } catch (e) {
+        stripSection.remove(); // collection fetch died — strip quietly disappears
+      }
     }
   };
 
@@ -1273,9 +1490,10 @@
           <span class="vol-wrap">
             <button class="subs-select ctl-btn" id="moreBtn" title="More actions">⋯</button>
             <div class="vol-pop more-pop" id="morePop" hidden>
-              <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
-              <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
-              <button class="subs-select ctl-btn" id="dlFilesBtn" title="Download 4KHDHub files (MKV — best with VLC)">↓ 4K files</button>
+            <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
+            <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
+            <button class="subs-select ctl-btn" id="dlFilesBtn" title="Download 4KHDHub files (MKV — best with VLC)">↓ 4K files</button>
+            <button class="subs-select ctl-btn" id="ambientBtn" title="Ambient glow behind the player">✨ Ambient</button>
             </div>
           </span>
           <span class="vol-wrap">
@@ -1385,6 +1603,20 @@
       e.stopPropagation();
       morePop.hidden = !morePop.hidden;
     });
+    // Ambient glow toggle (persisted app-wide; also used by the anime player)
+    const ambientBtn = view.querySelector('#ambientBtn');
+    if (ambientBtn) {
+      const ambientCtl = player.ambient();
+      const paintAmbient = () => {
+        ambientBtn.textContent = `✨ Ambient: ${ambientCtl.enabled ? 'On' : 'Off'}`;
+        ambientBtn.classList.toggle('active-ctl', ambientCtl.enabled);
+      };
+      paintAmbient();
+      ambientBtn.addEventListener('click', () => {
+        ambientCtl.setEnabled(!ambientCtl.enabled);
+        paintAmbient();
+      });
+    }
     shell.addEventListener('speed-change', (e) => {
       const r = Math.round(e.detail.rate * 100) / 100;
       speedBtn.textContent = `Speed: ${r}x`;
@@ -1792,6 +2024,21 @@
     } catch (e) {}
   }
 
+  // Subtle cross-view fade (CSS, reduced-motion aware): every route swap
+  // re-triggers the animation on <main> so navigation feels smooth instead of
+  // an abrupt content replace. The skeleton screens still do the "loading"
+  // work; this only softens the transition itself.
+  let firstRoute = true;
+  function paintRoute() {
+    if (firstRoute) {
+      firstRoute = false;
+      return;
+    }
+    view.classList.remove('route-fade');
+    void view.offsetWidth; // restart the CSS animation
+    view.classList.add('route-fade');
+  }
+
   async function route() {
     stripLegacyHash();
     setCanonical();
@@ -1810,6 +2057,7 @@
       view.textContent = '';
       view.removeAttribute('data-ssr-home');
     }
+    paintRoute();
     if (!parts.length) return views.home();
     switch (parts[0]) {
       case 'movie':
@@ -1838,6 +2086,9 @@
         break;
       case 'search':
         if (params.q) return views.search({ q: params.q });
+        break;
+      case 'collection':
+        if (parts[1]) return views.collection({ id: parts[1] });
         break;
     }
     views.home();
