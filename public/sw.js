@@ -7,7 +7,7 @@
 //  - API + /play: NEVER cached (auth'd tokens, range requests, live data)
 // Bump this name on every release that changes static assets — the activate
 // handler purges the old cache, so a stale SW cache can never outlive a deploy.
-const CACHE = 'cinephile-v58';
+const CACHE = 'cinephile-v59';
 // Versioned URLs to match what index.html actually requests (?v=20 for player) — precaching
 // the bare paths instead used to guarantee a MISS at runtime (the SW would
 // fetch /js/api.js?v=18 while holding /js/api.js), so the install downloaded
@@ -15,7 +15,7 @@ const CACHE = 'cinephile-v58';
 // /vendor/hls.min.js is deliberately NOT precached: ~400 KB that no browse/
 // search/home page needs — player.js lazy-loads it on the watch page, and that
 // fetch is cached here at runtime (static assets are cache-first).
-const SHELL = ['/', '/css/style.css?v=13', '/js/api.js?v=26', '/js/player.js?v=37', '/js/torrent.js?v=2', '/js/render.js?v=25', '/js/router.js?v=44', '/fonts/outfit-latin.woff2', '/manifest.webmanifest', '/icons/icon.svg'];
+const SHELL = ['/', '/css/style.css?v=13', '/js/api.js?v=26', '/js/player.js?v=38', '/js/torrent.js?v=2', '/js/render.js?v=25', '/js/router.js?v=45', '/fonts/outfit-latin.woff2', '/manifest.webmanifest', '/icons/icon.svg'];
 
 // everything the app fetches from our own API — network only.
 // (anime/* and collection/* are API data too — cache-first here would serve

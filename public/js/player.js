@@ -168,6 +168,7 @@ const Player = (() => {
       this.ready = false;
       this._codecFailed = false;
       this._codecWatch = null;
+      this._codecPoll = null;
       this._intro = null;
       this._introFired = false;
       this.resumePos = 0;
@@ -606,6 +607,7 @@ const Player = (() => {
     }
 
     _attach(src) {
+      if (!this.video || !this.video.isConnected) return; // navigation detached the player — abandon mid-race attaches
       this._currentSource = src;
       this._destroyTorrent(); // leaving peer mode (if active) for a server stream
       this._attachId = (this._attachId || 0) + 1;
@@ -637,7 +639,22 @@ const Player = (() => {
         if (attachId === this._attachId && this.video.videoWidth > 0) this._codecFailed = false;
         badCodec();
       }, { once: true });
-      this._codecWatch = setTimeout(badCodec, 6000);
+      // A one-shot timer misses the common "autoplay blocked" case: at t+6s
+      // currentTime is still 0 (no user gesture yet), the check no-ops, and
+      // when the user later presses play the audio-only HEVC attach stays
+      // black forever. Poll instead — each tick re-evaluates until frames
+      // appear, the attach goes stale (navigation/re-attach), or ~60s cap.
+      this._codecPoll && clearInterval(this._codecPoll);
+      let codecTicks = 0;
+      this._codecPoll = setInterval(() => {
+        if (attachId !== this._attachId || codecTicks > 40) {
+          clearInterval(this._codecPoll);
+          this._codecPoll = null;
+          return;
+        }
+        codecTicks += 1;
+        badCodec();
+      }, 1500);
 
       // mid-playback re-attach (server switch, dead source, audio/quality
       // change): carry the current position over so the new stream resumes
@@ -959,6 +976,7 @@ const Player = (() => {
 
     _playTorrent(found) {
       this._destroyTorrent();
+      if (!this.video || !this.video.isConnected) return Promise.reject(new Error('player gone'));
       return new Promise((resolve, reject) => {
         let done = false;
         const finish = (error) => {

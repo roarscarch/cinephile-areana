@@ -30,6 +30,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - run: npm ci
       - run: npm test
 
   canary:
@@ -39,6 +40,10 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
       - name: Probe all deployments
         env:
           CANARY_BASES: https://cinephiles-areana.vercel.app,https://cinephile-areana.pages.dev,https://cinephile-api.cinephilia-areana.workers.dev

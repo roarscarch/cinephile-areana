@@ -751,6 +751,27 @@
       animeHls = null;
     }
   }
+  // Detached <video> keeps decoding (audio keeps playing) after navigation —
+  // the route must pause + dismantle the active player before the view is
+  // replaced. MoviePlayer keeps its hls instance/torrent client alive until
+  // explicitly destroyed, so route teardown covers those too.
+  let activePlayer = null;
+  function stopActivePlayer() {
+    try {
+      view.querySelectorAll('video').forEach((v) => {
+        try { v.pause(); } catch (e) {}
+      });
+    } catch (e) {}
+    if (activePlayer) {
+      try {
+        activePlayer._attachId = (activePlayer._attachId || 0) + 1; // stale-ates in-flight race/attach continuations
+        if (activePlayer.video) { activePlayer.video.pause(); activePlayer.video.removeAttribute('src'); }
+        if (activePlayer.hls) { try { activePlayer.hls.destroy(); } catch (e) {} activePlayer.hls = null; }
+        if (typeof activePlayer._destroyTorrent === 'function') { try { activePlayer._destroyTorrent(); } catch (e) {} }
+      } catch (e) {}
+      activePlayer = null;
+    }
+  }
   function stripTags(html) {
     return String(html || '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
   }
@@ -1165,7 +1186,7 @@
         video.src = animePlayUrl(src, src.url);
       }
       video.addEventListener('loadeddata', () => { loadingEl.style.display = 'none'; }, { once: true });
-      video.play().catch(() => {});
+      if (video.isConnected) video.play().catch(() => {}); // navigation may have detached the video mid-load
     }
 
     audioBtn.addEventListener('click', () => load(!dub));
@@ -1587,6 +1608,7 @@
     // serial), so the CDN/self-host script never delays stream discovery.
     const shell = view.querySelector('.player-shell');
     const player = new Player.MoviePlayer(shell);
+    activePlayer = player;
     player.readyWhen(loadHls().catch(() => {}));
     const subsSelect = view.querySelector('#subsSelect');
 
@@ -2044,6 +2066,7 @@
     setCanonical();
     const { parts, params } = parseRoute();
     destroyAnimeHls();
+    stopActivePlayer();
     // The SSR home markup only survives until the first navigation — any
     // other view replaces it, so the flag must not outlive that render
     // (otherwise a later home visit would skip its template and query DOM
