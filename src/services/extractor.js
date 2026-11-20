@@ -523,23 +523,35 @@ async function resolveVidnest({ type, id, season, episode, server }) {
 // not reproducible client-side (same dependency the ecosystem's samples use).
 const MEOWTV_DECODER = 'https://enc-dec.app/api/dec-meowtv';
 const MEOWTV_TICKET_TTL_MS = 4 * 60 * 1000;
+const MEOWTV_RETRY_MS = 60 * 1000; // ticket endpoint cooldown after a failure
 let meowtvTicket = null; // { value, exp }
+let meowtvDownUntil = 0;
 
 async function getMeowtvTicket(signal) {
   if (meowtvTicket && meowtvTicket.exp > Date.now()) return meowtvTicket.value;
-  const res = await httpClient.post(`${meowApi()}/streams/ticket`, null, {
-    headers: {
-      Origin: meowOrigin(),
-      Referer: meowReferer(),
-      'User-Agent': STREAM_UA,
-    },
-    timeout: PROBE_TIMEOUT_MS,
-    ...(signal ? { signal } : {}),
-  });
-  const ticket = res.data && res.data.ticket;
-  if (!ticket) throw new Error('meowtv: no ticket in ticket response');
-  meowtvTicket = { value: ticket, exp: Date.now() + MEOWTV_TICKET_TTL_MS };
-  return ticket;
+  // The ticket endpoint is currently flapping (500s). Without this, every
+  // provider in the family re-hits it on every race; cool down and retry later.
+  if (Date.now() < meowtvDownUntil) throw new Error('meowtv: ticket endpoint cooling down');
+  try {
+    const res = await httpClient.post(`${meowApi()}/streams/ticket`, null, {
+      headers: {
+        Origin: meowOrigin(),
+        Referer: meowReferer(),
+        'User-Agent': STREAM_UA,
+      },
+      timeout: PROBE_TIMEOUT_MS,
+      ...(signal ? { signal } : {}),
+    });
+    const ticket = res.data && res.data.ticket;
+    if (!ticket) throw new Error('meowtv: no ticket in ticket response');
+    meowtvTicket = { value: ticket, exp: Date.now() + MEOWTV_TICKET_TTL_MS };
+    meowtvDownUntil = 0;
+    return ticket;
+  } catch (err) {
+    if (err && (err.code === 'ERR_CANCELED' || err.name === 'AbortError')) throw err;
+    meowtvDownUntil = Date.now() + MEOWTV_RETRY_MS;
+    throw err;
+  }
 }
 
 async function fetchMeowtvProvider(provider, type, id, season, episode, signal) {

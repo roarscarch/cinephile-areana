@@ -267,6 +267,8 @@ export class CinephileHQ {
     const all = await this.fetchEpisodeServers();
     const results = await Promise.all(
       all.map(async (server) => {
+        // Byse's PoW takes 4-15s; keep it listed without a slow probe.
+        if (server.name === 'byse') return { name: server.name, available: true, ms: 0 };
         const started = Date.now();
         let available = false;
         try {

@@ -583,19 +583,29 @@ async function probeStreamPlayable(src) {
 // otherwise) — the race + dead-marks own that. Ticket cached 4 min.
 const MEOWTV_DECODER = 'https://enc-dec.app/api/dec-meowtv';
 const MEOWTV_TICKET_TTL_MS = 4 * 60 * 1000;
+const MEOWTV_RETRY_MS = 60 * 1000;
 let meowtvTicket = null; // { value, exp }
+let meowtvDownUntil = 0;
 
 async function getMeowtvTicket(env) {
   if (meowtvTicket && meowtvTicket.exp > Date.now()) return meowtvTicket.value;
-  const ticket = await postJson(`${meowApi(env)}/streams/ticket`, undefined, {
-    Origin: meowOrigin(env),
-    Referer: meowReferer(env),
-    'User-Agent': STREAM_UA,
-  });
-  const value = ticket && ticket.ticket;
-  if (!value) throw new Error('meowtv: no ticket');
-  meowtvTicket = { value, exp: Date.now() + MEOWTV_TICKET_TTL_MS };
-  return value;
+  if (Date.now() < meowtvDownUntil) throw new Error('meowtv: ticket endpoint cooling down');
+  try {
+    const ticket = await postJson(`${meowApi(env)}/streams/ticket`, undefined, {
+      Origin: meowOrigin(env),
+      Referer: meowReferer(env),
+      'User-Agent': STREAM_UA,
+    });
+    const value = ticket && ticket.ticket;
+    if (!value) throw new Error('meowtv: no ticket');
+    meowtvTicket = { value, exp: Date.now() + MEOWTV_TICKET_TTL_MS };
+    meowtvDownUntil = 0;
+    return value;
+  } catch (err) {
+    if (err && (err.name === 'AbortError' || err.code === 'ERR_CANCELED')) throw err;
+    meowtvDownUntil = Date.now() + MEOWTV_RETRY_MS;
+    throw err;
+  }
 }
 
 async function fetchMeowtvProvider(env, provider, type, id, season, episode) {

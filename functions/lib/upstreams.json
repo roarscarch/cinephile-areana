@@ -58,12 +58,8 @@
       "api": "https://vidcore.io",
       "referer": "https://vidcore.io/",
       "origin": "https://vidcore.io",
-      "providers": [
-        {
-          "name": "vidcore",
-          "slug": "vidcore"
-        }
-      ]
+      "providers": [],
+      "_note": "Upstream API routes changed: the enc-dec bootstrap URLs now 404 (Route POST:/APA91… not found). Disabled until the new Next.js flow is reverse-engineered."
     },
     "vidnest": {
       "api": "https://new.vidnest.fun",
@@ -91,28 +87,12 @@
           "slug": "flixhq"
         },
         {
-          "name": "alfa",
-          "slug": "onehd"
-        },
-        {
           "name": "prime",
           "slug": "rpmvid"
         },
         {
-          "name": "zeta",
-          "slug": "nextgencloudfabric"
-        },
-        {
-          "name": "ophim",
-          "slug": "klikxxi"
-        },
-        {
           "name": "sigma",
           "slug": "hollymoviehd"
-        },
-        {
-          "name": "hexa",
-          "slug": "vidlink"
         },
         {
           "name": "delta",

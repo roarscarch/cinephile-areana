@@ -301,6 +301,11 @@ class CinephileHQ {
       Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
     const results = await Promise.all(
       SERVERS().map(async (server) => {
+        // Byse's proof-of-work takes 4-15s to resolve. Probing it makes the
+        // dropdown sit on "checking" and can mark a working fallback dead, so
+        // keep it listed without resolving (it only fails gracefully if the
+        // chosen title isn't carried).
+        if (server.name === 'byse') return { name: server.name, available: true, ms: 0 };
         const started = Date.now();
         let available = false;
         try {
