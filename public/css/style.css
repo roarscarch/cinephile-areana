@@ -882,6 +882,79 @@ button { font-family: inherit; }
   flex-wrap: wrap;
   margin-top: 16px;
 }
+
+/* Watch-page controls: a responsive "bento" grid of labelled tiles. Audio /
+   Video quality / Playback share the top row and stretch to fill it when one
+   is hidden; Subtitles spans the full width for the track picker + size +
+   sync. Captions make each purpose explicit (the subtitle select shows a
+   release name, not a label). */
+.player-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
+}
+/* Next-episode chip is not a tile — own full-width row, left aligned. */
+#nextChip { flex: 1 1 100%; justify-self: start; align-self: flex-start; }
+.ctl-field {
+  display: flex;
+  flex: 1 1 150px;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(10, 10, 18, 0.5);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.ctl-field:hover {
+  border-color: rgba(124, 92, 255, 0.42);
+  background: rgba(124, 92, 255, 0.075);
+}
+.ctl-field[hidden] { display: none; }
+/* Subtitles tile spans the row: track select + size + sync side by side.
+   order:2 keeps it below the Audio / Quality / Playback row. */
+#subsField { flex: 1 1 100%; order: 2; }
+.ctl-cap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+.ctl-cap::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+#audioField .ctl-cap::before { background: var(--accent); }
+#qualityField .ctl-cap::before { background: var(--accent-2); }
+#subsField .ctl-cap::before { background: #5ef0b0; }
+#playbackField .ctl-cap::before { background: #ffb86b; }
+.ctl-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.player-controls .subs-select {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.05);
+}
+.player-controls .subs-select:hover,
+.player-controls .subs-select:focus-visible {
+  border-color: var(--accent);
+  background: rgba(124, 92, 255, 0.12);
+}
+.player-controls #audioSelect,
+.player-controls #qualitySelect { width: 100%; max-width: none; }
+.player-controls #subsSelect { flex: 1 1 230px; max-width: 100%; min-width: 0; }
 .server-pick {
   display: inline-flex;
   align-items: center;
@@ -896,6 +969,12 @@ button { font-family: inherit; }
   color: var(--muted);
   opacity: 0.9;
 }
+.server-hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  opacity: 0.85;
+}
 
 .subs-select {
   padding: 9px 18px;
@@ -909,6 +988,13 @@ button { font-family: inherit; }
   cursor: pointer;
   outline: none;
   max-width: 280px;
+  color-scheme: dark; /* native dropdown list renders dark, not white */
+}
+/* Explicit option colors: the popup is OS-rendered and otherwise inherits a
+   white background while keeping our light text — invisible options. */
+.subs-select option {
+  background-color: var(--surface);
+  color: var(--text);
 }
 .subs-select:disabled { opacity: 0.5; cursor: default; }
 

@@ -1078,7 +1078,13 @@ const Player = (() => {
       [...(this.video.textTracks || [])].forEach((existing) => {
         existing.mode = 'hidden';
         const cues = existing.cues;
-        if (cues) for (let i = cues.length - 1; i >= 0; i--) cues.remove(cues[i]);
+        if (cues) {
+          for (let i = cues.length - 1; i >= 0; i--) {
+            try {
+              existing.removeCue(cues[i]);
+            } catch (e) {}
+          }
+        }
       });
       this._subTrack = null;
       this._subBaseCues = null; // new file → fresh raw cues, reset the fps guess
@@ -1151,7 +1157,13 @@ const Player = (() => {
     /** Re-render the active track's cues with the current offset + fps scale. */
     _addSubCues(track) {
       if (!track || !this._subBaseCues) return;
-      if (track.cues) for (let i = track.cues.length - 1; i >= 0; i--) track.cues[i].remove();
+      if (track.cues) {
+        for (let i = track.cues.length - 1; i >= 0; i--) {
+          try {
+            track.removeCue(track.cues[i]);
+          } catch (e) {}
+        }
+      }
       const offset = this._subOffset || 0;
       const timeScale = this._subScale || 1;
       for (const baseCue of this._subBaseCues) {

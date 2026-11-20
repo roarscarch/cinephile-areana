@@ -284,7 +284,7 @@ export function vidnestDecode(data, alphabet) {
 // last 16 bytes of the remainder (matches their bundle's secureDecrypt).
 // Requires a `_n` nonce on the request or the API answers 403.
 // The old custom-alphabet { data } decode was retired upstream.
-const DEFAULT_VIDNEST_SECRET = 'K3p8vQ2mX9rL5wZ0fN7bG1sH4tJ6dC9_y8S3wM1nQ5pL2';
+// The secret is deploy-time config (env.VIDNEST_SECRET) — never hardcoded.
 
 function vidnestNonce() {
   const bytes = new Uint8Array(16);
@@ -329,7 +329,8 @@ async function fetchVidnestProvider(env, provider, type, id, season, episode) {
       headers: { Referer: vidReferer(env), Origin: vidOrigin(env), 'User-Agent': STREAM_UA },
     });
     if (!json || !json.d || !json.n) throw new Error(`vidnest ${provider.name}: unexpected response`);
-    const secret = env.VIDNEST_SECRET || DEFAULT_VIDNEST_SECRET;
+    const secret = env.VIDNEST_SECRET;
+    if (!secret) throw new Error('VIDNEST_SECRET env required');
     return await vidnestDecryptV2(json.d, json.n, secret);
   } catch (err) {
     const status = err.status || '';

@@ -117,7 +117,11 @@
   }
 
   // ---- watch history row (everything played, newest first) ----
-  function fillHistoryRow() {
+  // Hide every title that is already shown in Continue Watching, so the two
+  // rows never duplicate a poster. (Continue = what you're mid-way through;
+  // History = everything else you've watched, with timestamps.)
+  function fillHistoryRow(activeItems = []) {
+    const active = new Set(activeItems.map((item) => item.id));
     const hwItems = (() => {
       try {
         const raw = JSON.parse(localStorage.getItem('cinephile-history') || '[]');
@@ -125,7 +129,7 @@
       } catch (error) {
         return [];
       }
-    })();
+    })().filter((entry) => !active.has(entry.id));
     const hwSection = view.querySelector('#hwSection');
     if (!hwSection) return;
     if (!hwItems.length) {
@@ -153,7 +157,7 @@
           image: entry.image || '',
           releaseDate: '',
           type,
-          subtitle: type === 'tv' ? epLabel(resumeEp) : relativeTime(entry.t),
+          subtitle: type === 'tv' ? `${epLabel(resumeEp)} · ${relativeTime(entry.t)}` : relativeTime(entry.t),
         });
       }).join('')
     );
@@ -288,6 +292,7 @@
           const resumeEp = episodeId || entry.episodeId || '1-1';
           return {
             id: mediaKey,
+            episodeId: resumeEp,
             href: type === 'tv' ? `/watch/${type}/${id}/${resumeEp}` : `/watch/${type}/${id}`,
             title: entry.title || 'Continue watching',
             image: entry.image || '',
@@ -564,8 +569,8 @@
     }
     // My List row from the watchlist (hidden when empty)
     fillWatchlistRow();
-    // History row (hidden when empty)
-    fillHistoryRow();
+    // History row (hidden when empty) — excludes what Continue Watching shows
+    fillHistoryRow(continueItems);
     // Taste row (hidden until enough history; fills async)
     fillTasteRow();
 
@@ -1490,40 +1495,56 @@
           <button class="next-ep">▶ Next episode</button>
         </div>
         <div class="player-bar" id="serverBar"></div>
-        <div class="watch-head" style="margin-top:20px">
+        <div class="player-controls">
           <button class="subs-select ctl-btn" id="nextChip" hidden title="Play the next episode">▶ Next episode</button>
-          <select class="subs-select" id="audioSelect" hidden>
-            <option value="auto">Audio: Auto</option>
-          </select>
-          <select class="subs-select" id="qualitySelect" hidden>
-            <option value="auto">Quality: Auto</option>
-          </select>
-          <select class="subs-select" id="subsSelect">
-            <option value="">Subtitles: Off</option>
-          </select>
-          <button class="subs-select ctl-btn" id="subSizeBtn" title="Subtitle text size">CC: M</button>
-          <span class="subs-sync" id="subSync" hidden>
-            <button class="subs-select ctl-btn" id="subSyncMinus" title="Subtitles earlier (shortcut: z)">−</button>
-            <button class="subs-select ctl-btn" id="subSyncVal" title="Subtitle sync — click to reset (shortcuts: z / x)">Sync: 0.00s</button>
-            <button class="subs-select ctl-btn" id="subSyncPlus" title="Subtitles later (shortcut: x)">+</button>
-          </span>
-          <button class="subs-select ctl-btn" id="speedBtn" title="Playback speed (shortcuts: > / <)">Speed: 1x</button>
-          <span class="vol-wrap">
-            <button class="subs-select ctl-btn" id="moreBtn" title="More actions">⋯</button>
-            <div class="vol-pop more-pop" id="morePop" hidden>
-            <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
-            <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
-            <button class="subs-select ctl-btn" id="dlFilesBtn" title="Download 4KHDHub files (MKV — best with VLC)">↓ 4K files</button>
-            <button class="subs-select ctl-btn" id="ambientBtn" title="Ambient glow behind the player">✨ Ambient</button>
+          <div class="ctl-field" id="audioField" hidden>
+            <span class="ctl-cap">Audio</span>
+            <select class="subs-select" id="audioSelect" aria-label="Audio language">
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <div class="ctl-field" id="qualityField" hidden>
+            <span class="ctl-cap">Video quality</span>
+            <select class="subs-select" id="qualitySelect" aria-label="Video quality">
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <div class="ctl-field" id="subsField">
+            <span class="ctl-cap">Subtitles</span>
+            <div class="ctl-line">
+              <select class="subs-select" id="subsSelect" aria-label="Subtitles">
+                <option value="">Off</option>
+              </select>
+              <button class="subs-select ctl-btn" id="subSizeBtn" title="Subtitle text size">Size: M</button>
+              <span class="subs-sync" id="subSync" hidden>
+                <button class="subs-select ctl-btn" id="subSyncMinus" title="Subtitles earlier (shortcut: z)">−</button>
+                <button class="subs-select ctl-btn" id="subSyncVal" title="Subtitle sync — click to reset (shortcuts: z / x)">Sync: 0.00s</button>
+                <button class="subs-select ctl-btn" id="subSyncPlus" title="Subtitles later (shortcut: x)">+</button>
+              </span>
             </div>
-          </span>
-          <span class="vol-wrap">
-            <button class="subs-select ctl-btn" id="volBtn" title="Volume (shortcuts: ↑ / ↓)">🔊 100%</button>
-            <div class="vol-pop" id="volPop" hidden>
-              <input id="volRange" type="range" min="10" max="2000" value="100" step="5" />
-              <span id="volLabel">100%</span>
+          </div>
+          <div class="ctl-field" id="playbackField">
+            <span class="ctl-cap">Playback</span>
+            <div class="ctl-line">
+              <button class="subs-select ctl-btn" id="speedBtn" title="Playback speed (shortcuts: > / <)">Speed: 1x</button>
+              <span class="vol-wrap">
+                <button class="subs-select ctl-btn" id="moreBtn" title="More actions — picture-in-picture, download, ambient glow" aria-haspopup="menu" aria-expanded="false">More ▾</button>
+                <div class="vol-pop more-pop" id="morePop" hidden>
+                  <button class="subs-select ctl-btn" id="pipBtn" title="Picture in picture">⧉ PiP</button>
+                  <button class="subs-select ctl-btn" id="downloadBtn" title="Download this video">↓ Download</button>
+                  <button class="subs-select ctl-btn" id="dlFilesBtn" title="Download 4KHDHub files (MKV — best with VLC)">↓ 4K files</button>
+                  <button class="subs-select ctl-btn" id="ambientBtn" title="Ambient glow behind the player">✨ Ambient</button>
+                </div>
+              </span>
+              <span class="vol-wrap">
+                <button class="subs-select ctl-btn" id="volBtn" title="Volume (shortcuts: ↑ / ↓)">🔊 100%</button>
+                <div class="vol-pop" id="volPop" hidden>
+                  <input id="volRange" type="range" min="10" max="2000" value="100" step="5" />
+                  <span id="volLabel">100%</span>
+                </div>
+              </span>
             </div>
-          </span>
+          </div>
         </div>
       </div>`;
 
@@ -1564,7 +1585,8 @@
       };
       bar.innerHTML =
         `<label class="server-pick">Server <select class="subs-select" id="serverSelect">` +
-        `${optionsHtml()}</select><span class="probe-status" id="probeStatus"></span></label>`;
+        `${optionsHtml()}</select><span class="probe-status" id="probeStatus"></span></label>` +
+        `<span class="server-hint">Wait a few seconds, then switch servers if it still won't play — that usually works better.</span>`;
       const serverSelect = bar.querySelector('#serverSelect');
       const probeStatus = bar.querySelector('#probeStatus');
       serverSelect.addEventListener('change', () => {
@@ -1624,6 +1646,7 @@
     moreBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       morePop.hidden = !morePop.hidden;
+      moreBtn.setAttribute('aria-expanded', String(!morePop.hidden));
     });
     // Ambient glow toggle (persisted app-wide; also used by the anime player)
     const ambientBtn = view.querySelector('#ambientBtn');
@@ -1750,7 +1773,10 @@
     player.shell.addEventListener('volume-change', (e) => syncVol(e.detail.volume));
     document.addEventListener('click', (e) => {
       if (!volPop.contains(e.target) && !volBtn.contains(e.target)) volPop.hidden = true;
-      if (!morePop.contains(e.target) && !moreBtn.contains(e.target)) morePop.hidden = true;
+      if (!morePop.contains(e.target) && !moreBtn.contains(e.target)) {
+        morePop.hidden = true;
+        moreBtn.setAttribute('aria-expanded', 'false');
+      }
     });
     syncVol(player.getVolume());
     shell.addEventListener('progress-resumed', (e) => toastMsg(`Resumed from ${fmtTime(e.detail.pos)}`));
@@ -1760,7 +1786,7 @@
     // reapplies the pick after a server switch.
     function refreshSubtitleUI() {
       const subs = player.subtitles || [];
-      subsSelect.innerHTML = '<option value="">Subtitles: Off</option>' +
+      subsSelect.innerHTML = '<option value="">Off</option>' +
         subs.map((s, i) => `<option value="${i}">${escapeHtml(s.label || s.lang || 'Subtitle ' + (i + 1))}</option>`).join('');
       subsSelect.disabled = subs.length === 0;
       // Smart subtitles: auto-show the stored choice, else the English track
@@ -1794,7 +1820,7 @@
     // subtitle size cycler (S/M/L/XL), persisted by the player
     const subSizeBtn = view.querySelector('#subSizeBtn');
     const paintSubSize = () => {
-      subSizeBtn.textContent = `CC: ${player._subSize || 'M'}`;
+      subSizeBtn.textContent = `Size: ${player._subSize || 'M'}`;
     };
     paintSubSize();
     subSizeBtn.addEventListener('click', () => {
@@ -1846,18 +1872,19 @@
     // mean the language is merged into the stream — no choice needed, skip.
     const DUB_LABELS = { esla: 'Spanish (LATAM)', ptbr: 'Portuguese (BR)' };
     const audioSelect = view.querySelector('#audioSelect');
+    const audioField = view.querySelector('#audioField');
     const dubOwner = {}; // dub -> server name
     let audioProbeDone = false;
 
     function renderAudioSelect() {
       const dubs = Object.keys(dubOwner);
       if (!dubs.length) {
-        audioSelect.hidden = true;
+        audioField.hidden = true;
         return;
       }
-      audioSelect.hidden = false;
+      audioField.hidden = false;
       audioSelect.innerHTML =
-        '<option value="auto">Audio: Auto</option>' +
+        '<option value="auto">Auto</option>' +
         dubs.map((d) => `<option value="${d}">${DUB_LABELS[d] || d}</option>`).join('');
       audioSelect.value = dubOwner[player.audio] ? player.audio : 'auto';
     }
@@ -1912,16 +1939,17 @@
     // quality picker — populated when the manifest/sources load; the player
     // re-applies the stored choice (localStorage) on every new manifest
     const qualitySelect = view.querySelector('#qualitySelect');
+    const qualityField = view.querySelector('#qualityField');
     qualitySelect.addEventListener('change', () => player.setQuality(qualitySelect.value));
     shell.addEventListener('quality-ready', (e) => {
       const levels = (e.detail.levels || []).map(String);
       if (!levels.length) {
-        qualitySelect.hidden = true;
+        qualityField.hidden = true;
         return;
       }
-      qualitySelect.hidden = false;
+      qualityField.hidden = false;
       qualitySelect.innerHTML =
-        '<option value="auto">Quality: Auto</option>' +
+        '<option value="auto">Auto</option>' +
         levels.map((h) => `<option value="${h}">${h}p</option>`).join('');
       qualitySelect.value = levels.includes(String(player.quality)) ? player.quality : 'auto';
     });

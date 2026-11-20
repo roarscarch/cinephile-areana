@@ -7,4 +7,4 @@ workers_dev = true
 
 # Backend pool (public URLs — vars, not secrets). Edit + redeploy to change.
 [vars]
-BACKENDS = "https://cinephile-areana.pages.dev,https://cinephilia-vercel.vercel.app"
+BACKENDS = "https://cinephile-areana.pages.dev,https://cinephilia.in"

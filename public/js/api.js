@@ -32,7 +32,11 @@ const API = (() => {
   // Single-URL front (hides backend hostnames in normal operation); direct
   // mirrors are the fallback if the proxy itself ever fails.
   const API_PROXY = 'https://cinephile-api.cinephilia-areana.workers.dev';
-  const MIRRORS = ['https://cinephilia-vercel.vercel.app', 'https://cinephile-areana.pages.dev'];
+  const MIRRORS = ['https://cinephilia.in', 'https://cinephile-areana.pages.dev'];
+  // Bump when subtitle/dub server logic changes: the edge caches /subtitles
+  // and /dubs for an hour, so a new query param is what guarantees a fresh
+  // response after a deploy instead of a stale cached track list.
+  const ENRICH_CACHE_V = '2';
   const PIN_KEY = 'cinephile-api-base';
   const PIN_TTL = 24 * 60 * 60 * 1000;
 
@@ -133,7 +137,7 @@ const API = (() => {
     },
     // subtitle tracks — fired in parallel with sources(); result attaches late
     subtitles: (mediaId, episodeId = '1-1') =>
-      get(`/subtitles/${episodeId}?${new URLSearchParams({ mediaId })}`),
+      get(`/subtitles/${episodeId}?${new URLSearchParams({ mediaId, v: ENRICH_CACHE_V })}`),
     servers: (mediaId = 'movie/1', episodeId = '1-1') =>
       get(`/servers/${encodeURIComponent(episodeId)}?mediaId=${encodeURIComponent(mediaId)}`),
     // Per-title availability probe (which servers actually have a source for
@@ -141,7 +145,7 @@ const API = (() => {
     // the server picker when the user wants to switch sources.
     probeServers: (mediaId, episodeId = '1-1') =>
       get(`/servers/${encodeURIComponent(episodeId)}?mediaId=${encodeURIComponent(mediaId)}&probe=1`),
-    dubs: (mediaId, episodeId = '1-1') => get(`/dubs/${episodeId}?mediaId=${mediaId}`),
+    dubs: (mediaId, episodeId = '1-1') => get(`/dubs/${episodeId}?mediaId=${mediaId}&v=${ENRICH_CACHE_V}`),
     row: (kind) => get(`/${kind}`),
     browse: (kind, page = 1) => get(`/${kind}?page=${page}`),
     genre: (genre, page = 1) => get(`/genre/${encodeURIComponent(genre)}?page=${page}`),

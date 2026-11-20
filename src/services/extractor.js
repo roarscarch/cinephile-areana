@@ -180,7 +180,8 @@ const PEACHIFY_KEY_HEX = process.env.PEACHIFY_KEY_HEX || "d8f2a1b5e9c470814f6b2c
 // vidnest rotated their AES secret in 2026-10 (bundle constant "K3p8vQ2m...").
 // Old value F9k2mR8... no longer authenticates — GCM decrypt fails for every
 // provider, which is why /sources went empty. Response now also carries v:2.
-const VIDNEST_SECRET = process.env.VIDNEST_SECRET || 'K3p8vQ2mX9rL5wZ0fN7bG1sH4tJ6dC9_y8S3wM1nQ5pL2';
+// The secret is deploy-time config (VIDNEST_SECRET) — never hardcoded.
+const VIDNEST_SECRET = process.env.VIDNEST_SECRET || '';
 // NOTE: VIDNEST_REFERER is defined above from config (let, refreshable).
 const VIDNEST_ALPHABET = process.env.VIDNEST_ALPHABET || "RB0fpH8ZEyVLkv7c2i6MAJ5u3IKFDxlS1NTsnGaqmXYdUrtzjwObCgQP94hoeW+/=";
 
@@ -399,6 +400,7 @@ function vidnestNonce() {
 }
 
 function vidnestDeriveKey(nonce) {
+  if (!VIDNEST_SECRET) throw new Error('VIDNEST_SECRET env required');
   return crypto.createHash('sha256').update(`${nonce}|${VIDNEST_SECRET}`).digest();
 }
 

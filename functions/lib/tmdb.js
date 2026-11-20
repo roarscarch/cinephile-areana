@@ -6,7 +6,7 @@
 //   env comes from constructor (Pages/Workers bindings), not process.env
 
 import { resolveStream, fetchSubtitles, fetchVidnestSubtitles, PROVIDERS, VIDNEST_PROVIDERS, MEOWTV_PROVIDERS, BYSE_PROVIDERS, CINEJOY_PROVIDERS, VIDCORE_PROVIDERS, signPlayUrl } from './extractor.js';
-import { fetchEnglishSubtitles, fetchSubdlVtt } from './subtitles.js';
+import { fetchEnglishSubtitles } from './subtitles.js';
 
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const IMAGE_BASE = 'https://image.tmdb.org/t/p/w500';
@@ -313,12 +313,31 @@ export class CinephileHQ {
   _mergeSubtitles(osSubs, subs, vsubs) {
     const isEnglish = (track) => /english|\beng\b|\ben\b/i.test(`${track.label || ''} ${track.lang || ''}`);
     const builtIn = [...subs, ...vsubs].filter(isEnglish);
-    const merged = [...osSubs, ...builtIn];
-    const seen = new Set();
+    // Built-in direct tracks first: SubDL zip downloads have a 50/day cap.
+    const merged = [...builtIn, ...osSubs];
+    const HOST_CAP = 3;
+    const seenUrls = new Set();
+    const seenHostLabels = new Set();
+    const hostCounts = new Map();
     return merged.filter((track) => {
-      const dedupeKey = track.label || track.lang || 'unknown';
-      if (seen.has(dedupeKey)) return false;
-      seen.add(dedupeKey);
+      const url = track.url || '';
+      const dedupeKey = url || track.label || track.lang || 'unknown';
+      if (seenUrls.has(dedupeKey)) return false;
+      seenUrls.add(dedupeKey);
+      let host = 'local';
+      if (/^https?:/i.test(url)) {
+        try {
+          host = new URL(url).hostname;
+        } catch {
+          host = 'unknown';
+        }
+      }
+      const hostLabel = `${host}:${track.label || track.lang || ''}`;
+      if (seenHostLabels.has(hostLabel)) return false;
+      seenHostLabels.add(hostLabel);
+      const count = hostCounts.get(host) || 0;
+      if (count >= HOST_CAP) return false;
+      hostCounts.set(host, count + 1);
       return true;
     });
   }
@@ -330,19 +349,20 @@ export class CinephileHQ {
       try {
         let head;
         if (track.url.startsWith('/subtitles/subdl?')) {
-          // Local route — resolve in-process instead of HTTP loopback.
-          const query = new URLSearchParams(track.url.split('?')[1]);
-          head = (await fetchSubdlVtt(this.env, query.get('zip'), query.get('ep'))).slice(0, 4000);
-        } else {
-          const ctrl = new AbortController();
-          const timeoutId = setTimeout(() => ctrl.abort(), 5000);
-          try {
-            const response = await fetch(track.url, { signal: ctrl.signal });
-            if (!response.ok) return null;
-            head = (await response.text()).slice(0, 4000);
-          } finally {
-            clearTimeout(timeoutId);
-          }
+          // SubDL zip downloads are capped at 50/day — never spend one on
+          // validation. Trust the search result; the player falls through on
+          // a load failure.
+          SUB_VALID_CACHE.set(track.url, { ok: true, ts: Date.now() });
+          return track;
+        }
+        const ctrl = new AbortController();
+        const timeoutId = setTimeout(() => ctrl.abort(), 5000);
+        try {
+          const response = await fetch(track.url, { signal: ctrl.signal });
+          if (!response.ok) return null;
+          head = (await response.text()).slice(0, 4000);
+        } finally {
+          clearTimeout(timeoutId);
         }
         const ok = /^WEBVTT/m.test(head) || /-->/m.test(head);
         SUB_VALID_CACHE.set(track.url, { ok, ts: Date.now() });
@@ -352,7 +372,7 @@ export class CinephileHQ {
         return null;
       }
     };
-    const results = await Promise.all(subs.slice(0, 8).map(check));
+    const results = await Promise.all(subs.slice(0, 12).map(check));
     return results.filter(Boolean).slice(0, 6);
   }
 

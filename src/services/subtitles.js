@@ -81,12 +81,31 @@ function extractSrtFromZip(buffer, episode) {
   return { filename: chosen.filename, content };
 }
 
+// Strip SubDL's api_key from a download path before it ever reaches the client.
+// The key is re-attached server-side in fetchSubdlVtt().
+function stripApiKey(path) {
+  const [base, query] = String(path).split('?');
+  if (!query) return path;
+  const params = new URLSearchParams(query);
+  params.delete('api_key');
+  const rest = params.toString();
+  return rest ? `${base}?${rest}` : base;
+}
+
+function withSubdlKey(path) {
+  if (!SUBDL_API_KEY) return path;
+  const clean = stripApiKey(path);
+  const sep = clean.includes('?') ? '&' : '?';
+  return `${clean}${sep}api_key=${encodeURIComponent(SUBDL_API_KEY)}`;
+}
+
 // Fetch zip from SubDL and convert to WebVTT in memory
 async function fetchSubdlVtt(zipUrlPath, episode) {
-  const cacheKey = `${zipUrlPath}::${episode || ''}`;
+  const cleanPath = stripApiKey(zipUrlPath);
+  const cacheKey = `${cleanPath}::${episode || ''}`;
   if (VTT_CACHE.has(cacheKey)) return VTT_CACHE.get(cacheKey);
 
-  const fullUrl = `${SUBDL_DL_BASE}${zipUrlPath}`;
+  const fullUrl = `${SUBDL_DL_BASE}${withSubdlKey(cleanPath)}`;
   const response = await httpClient.get(fullUrl, { responseType: 'arraybuffer', timeout: 10000 });
   const buffer = Buffer.from(response.data);
   const extracted = extractSrtFromZip(buffer, episode);
@@ -119,7 +138,7 @@ async function searchSubdl({ type, imdbId, season, episode }) {
     return list
       .slice(0, 4)
       .map((item) => ({
-        url: `/subtitles/subdl?zip=${encodeURIComponent(item.url)}&ep=${type === 'tv' ? episode || '' : ''}`,
+        url: `/subtitles/subdl?zip=${encodeURIComponent(stripApiKey(item.url))}&ep=${type === 'tv' ? episode || '' : ''}`,
         label: item.release_name || item.name || 'English (SubDL)',
         lang: 'en',
       }))

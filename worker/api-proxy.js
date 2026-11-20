@@ -19,7 +19,7 @@
 
 const DEFAULT_BACKENDS = [
   'https://cinephile-areana.pages.dev',
-  'https://cinephilia-vercel.vercel.app',
+  'https://cinephilia.in',
 ];
 // Overridable without a code change: set BACKENDS="https://a,https://b"
 // as Worker vars (wrangler.api.toml [vars] or dashboard). Public URLs, not

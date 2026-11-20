@@ -90,10 +90,28 @@ async function timedFetch(url, opts = {}, ms = 6000) {
   }
 }
 
+function stripApiKey(path) {
+  const [base, query] = String(path).split('?');
+  if (!query) return path;
+  const params = new URLSearchParams(query);
+  params.delete('api_key');
+  const rest = params.toString();
+  return rest ? `${base}?${rest}` : base;
+}
+
+function withSubdlKey(env, path) {
+  const key = subdlKey(env);
+  if (!key) return path;
+  const clean = stripApiKey(path);
+  const sep = clean.includes('?') ? '&' : '?';
+  return `${clean}${sep}api_key=${encodeURIComponent(key)}`;
+}
+
 export async function fetchSubdlVtt(env, zipUrlPath, episode) {
-  const cacheKey = `${zipUrlPath}::${episode || ''}`;
+  const cleanPath = stripApiKey(zipUrlPath);
+  const cacheKey = `${cleanPath}::${episode || ''}`;
   if (VTT_CACHE.has(cacheKey)) return VTT_CACHE.get(cacheKey);
-  const zipResponse = await timedFetch(`${SUBDL_DL_BASE}${zipUrlPath}`, {}, 10000);
+  const zipResponse = await timedFetch(`${SUBDL_DL_BASE}${withSubdlKey(env, cleanPath)}`, {}, 10000);
   if (!zipResponse.ok) throw new Error(`SubDL zip ${zipResponse.status}`);
   const bytes = new Uint8Array(await zipResponse.arrayBuffer());
   const extracted = await extractSrtFromZip(bytes, episode);
@@ -123,7 +141,7 @@ async function searchSubdl(env, { type, imdbId, season, episode }) {
     return list
       .slice(0, 4)
       .map((item) => ({
-        url: `/subtitles/subdl?zip=${encodeURIComponent(item.url)}&ep=${type === 'tv' ? episode || '' : ''}`,
+        url: `/subtitles/subdl?zip=${encodeURIComponent(stripApiKey(item.url))}&ep=${type === 'tv' ? episode || '' : ''}`,
         label: item.release_name || item.name || 'English (SubDL)',
         lang: 'en',
       }))

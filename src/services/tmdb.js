@@ -353,15 +353,41 @@ class CinephileHQ {
   // built-in family tracks, deduped. ENGLISH-ONLY: built-in non-English tracks
   // are dropped — the app only ever surfaces EN subs. OS/SubDL results pass
   // through untouched since their labels are release names, not language names.
+  // Built-in direct tracks come FIRST: they cost nothing, whereas every SubDL
+  // zip download counts against a tiny daily quota (50/day), so SubDL is the
+  // fallback for titles with no free English track.
   _mergeSubtitles(osSubs, subs, vsubs) {
     const isEnglish = (track) => /english|\beng\b|\ben\b/i.test(`${track.label || ''} ${track.lang || ''}`);
     const builtIn = [...subs, ...vsubs].filter(isEnglish); // drop non-EN family tracks
-    const merged = [...osSubs, ...builtIn];
-    const seen = new Set();
+    const merged = [...builtIn, ...osSubs];
+
+    // Dedupe by URL (labels collide across providers — one host can return 15
+    // tracks all labelled "English"). Cap per host so a single dead host (e.g.
+    // rezesubs 403s server-side) can't crowd every working track out of the
+    // validation window.
+    const HOST_CAP = 3;
+    const seenUrls = new Set();
+    const seenHostLabels = new Set();
+    const hostCounts = new Map();
     return merged.filter((track) => {
-      const dedupeKey = track.label || track.lang || 'unknown';
-      if (seen.has(dedupeKey)) return false;
-      seen.add(dedupeKey);
+      const url = track.url || '';
+      const dedupeKey = url || track.label || track.lang || 'unknown';
+      if (seenUrls.has(dedupeKey)) return false;
+      seenUrls.add(dedupeKey);
+      let host = 'local';
+      if (/^https?:/i.test(url)) {
+        try {
+          host = new URL(url).hostname;
+        } catch (e) {
+          host = 'unknown';
+        }
+      }
+      const hostLabel = `${host}:${track.label || track.lang || ''}`;
+      if (seenHostLabels.has(hostLabel)) return false;
+      seenHostLabels.add(hostLabel);
+      const count = hostCounts.get(host) || 0;
+      if (count >= HOST_CAP) return false;
+      hostCounts.set(host, count + 1);
       return true;
     });
   }
@@ -374,15 +400,21 @@ class CinephileHQ {
    * Runs on the /subtitles path only (never blocks playback).
    */
   async _validateSubtitles(subs) {
-    const SELF = `http://127.0.0.1:${process.env.PORT || 3000}`; // for local routes (/subtitles/subdl)
     const check = async (track) => {
       const cached = SUB_VALID_CACHE.get(track.url);
       if (cached && Date.now() - cached.ts < SUB_VALID_TTL) return cached.ok ? track : null;
       try {
-        const url = track.url.startsWith('/') ? SELF + track.url : track.url;
-        const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        let head;
+        if (track.url.startsWith('/subtitles/subdl?')) {
+          // SubDL zip downloads are capped at 50/day on the dl host — never
+          // spend one just to validate. Trust the search result; the player
+          // falls through to the next track if this one fails to load.
+          SUB_VALID_CACHE.set(track.url, { ok: true, ts: Date.now() });
+          return track;
+        }
+        const response = await fetch(track.url, { signal: AbortSignal.timeout(5000) });
         if (!response.ok) return null;
-        const head = (await response.text()).slice(0, 4000);
+        head = (await response.text()).slice(0, 4000);
         const ok = /^WEBVTT/m.test(head) || /-->/m.test(head); // subtitle text, not a zip/html/error
         SUB_VALID_CACHE.set(track.url, { ok, ts: Date.now() });
         return ok ? track : null;
@@ -391,7 +423,7 @@ class CinephileHQ {
         return null;
       }
     };
-    const results = await Promise.all(subs.slice(0, 8).map(check));
+    const results = await Promise.all(subs.slice(0, 12).map(check));
     return results.filter(Boolean).slice(0, 6);
   }
 
