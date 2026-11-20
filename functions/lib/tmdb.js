@@ -267,8 +267,10 @@ export class CinephileHQ {
     const all = await this.fetchEpisodeServers();
     const results = await Promise.all(
       all.map(async (server) => {
-        // Byse's PoW takes 4-15s; keep it listed without a slow probe.
-        if (server.name === 'byse') return { name: server.name, available: true, ms: 0 };
+        // Byse's PoW/attestation can't complete inside the Pages runtime
+        // (CPU/egress); attempting it can trip a Worker 503. Hide it here —
+        // the Node/Vercel twin still probes it where it can work.
+        if (server.name === 'byse') return { name: server.name, available: false, ms: 0 };
         const started = Date.now();
         let available = false;
         try {

@@ -301,17 +301,15 @@ class CinephileHQ {
       Promise.race([promise, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
     const results = await Promise.all(
       SERVERS().map(async (server) => {
-        // Byse's proof-of-work takes 4-15s to resolve. Probing it makes the
-        // dropdown sit on "checking" and can mark a working fallback dead, so
-        // keep it listed without resolving (it only fails gracefully if the
-        // chosen title isn't carried).
-        if (server.name === 'byse') return { name: server.name, available: true, ms: 0 };
         const started = Date.now();
         let available = false;
         try {
+          // Byse solves a proof-of-work and takes 4-15s when healthy. Give it
+          // a longer deadline so a working source isn't cached as dead for
+          // 10 min (it still fast-fails where its egress is blocked).
           const r = await deadline(
             resolveStream({ type, id, season, episode, server: server.name }).catch(() => null),
-            9000
+            server.name === 'byse' ? 16000 : 9000
           );
           available = Boolean(r && r.sources && r.sources.length);
         } catch (e) {}
